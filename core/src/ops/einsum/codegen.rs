@@ -1,3 +1,5 @@
+use tract_linalg::frame::Packer;
+
 use super::*;
 use crate::ops::cast::cast;
 use crate::ops::math::add;
@@ -306,25 +308,28 @@ fn lir_mat_mul_unary(
     let m = &input_facts[0].shape[a_m];
     let k = &input_facts[0].shape[a_k];
     let n = &input_facts[1].shape[b_n];
-    if let (Some(m), Some(n)) = (m.as_i64(), n.as_i64()) {
-        if m < n {
-            let expr = op
-                .axes
-                .iter_all_axes()
-                .map(|axis| {
-                    let mut axis = axis.clone();
-                    axis.inputs.swap(0, 1);
-                    axis
-                })
-                .collect::<TVec<Axis>>();
-            return TypedModelPatch::replace_single_op(
-                model,
-                node,
-                &[node.inputs[1], node.inputs[0]],
-                EinSum { axes: AxesMapping::new(node.inputs.len(), 1, expr)?, ..op.clone() },
-            )
-            .map(Some);
-        }
+    let must_transpose = match (m.as_i64(), n.as_i64()) {
+        (Some(m), Some(n)) => m < n,
+        (None, Some(n)) => n >= 8,
+        _ => false,
+    };
+    if must_transpose {
+        let expr = op
+            .axes
+            .iter_all_axes()
+            .map(|axis| {
+                let mut axis = axis.clone();
+                axis.inputs.swap(0, 1);
+                axis
+            })
+            .collect::<TVec<Axis>>();
+        return TypedModelPatch::replace_single_op(
+            model,
+            node,
+            &[node.inputs[1], node.inputs[0]],
+            EinSum { axes: AxesMapping::new(node.inputs.len(), 1, expr)?, ..op.clone() },
+        )
+        .map(Some);
     }
     let a_dt = input_facts[0].datum_type;
     let b_dt = input_facts[1].datum_type;
@@ -336,22 +341,20 @@ fn lir_mat_mul_unary(
     let mut patch = TypedModelPatch::new("Einsum to LirMatMulUnary");
     let a = patch.tap_model(model, node.inputs[0])?;
     let b = patch.tap_model(model, node.inputs[1])?;
-    let a_output_shape_fact =
-        MatMatMulPack::output_shape(&patch.outlet_fact(a)?.shape, &mmm.a_pack(), a_m, a_k);
-    let pack_a = MatMatMulPack {
-        packer: mmm.a_pack(),
-        k_axis: a_k,
-        mn_axis: a_m,
-        output_shape_fact: a_output_shape_fact,
-    };
-    let b_output_shape_fact =
-        MatMatMulPack::output_shape(&patch.outlet_fact(b)?.shape, &mmm.b_pack(), b_n, b_k);
-    let pack_b = MatMatMulPack {
-        packer: mmm.b_pack(),
-        k_axis: b_k,
-        mn_axis: b_n,
-        output_shape_fact: b_output_shape_fact,
-    };
+    let packing = mmm
+        .packings()
+        .iter()
+        .position(|p| {
+            p.0.can_prepare_types().contains(&a_dt.unquantized()) && p.1.can_prepare_types().contains(&b_dt.unquantized())
+        })
+        .with_context(|| format!("No packing for {mmm:?} with inputs {a_dt:?} and {b_dt:?}"))?;
+    let packers = mmm.packings()[packing];
+    let a_pack =
+        packers.0.downcast_ref::<Packer>().context("Expects regular packed format for A")?.clone();
+    let b_pack =
+        packers.1.downcast_ref::<Packer>().context("Expects regular packed format for B")?.clone();
+    let pack_a = MatMatMulPack { packer: a_pack, k_axis: a_k, mn_axis: a_m };
+    let pack_b = MatMatMulPack { packer: b_pack, k_axis: b_k, mn_axis: b_n };
     let pa = patch.wire_node(format!("{name}.pack_a"), pack_a, &[a])?[0];
     let pb = patch.wire_node(format!("{name}.pack_b"), pack_b, &[b])?[0];
 
@@ -376,8 +379,6 @@ fn lir_mat_mul_unary(
     let name = &node.name;
     let geo = AddMatMulGeometry {
         k: k.clone(),
-        a_storage: k.as_i64().map(|k| unsafe { mmm.a_packed(a_dt.size_of(), k as usize) }),
-        b_storage: k.as_i64().map(|k| unsafe { mmm.b_packed(b_dt.size_of(), k as usize) }),
         mmm: mmm.clone(),
         c_to_a_axis_mapping: MapOutputAxisToInput(c_to_a_axis_mapping),
         c_to_b_axis_mapping: MapOutputAxisToInput(c_to_b_axis_mapping),
@@ -388,7 +389,7 @@ fn lir_mat_mul_unary(
         c_fact,
         c_m,
         c_n,
-        vec![ProtoFusedSpec::AddMatMul(geo, 0, 1), ProtoFusedSpec::Store(output)],
+        vec![ProtoFusedSpec::AddMatMul { geo, a: 0, b: 1, packing }, ProtoFusedSpec::Store(output)],
     )
     .context("Creating LirMatMulUnary")?;
     let output = patch.wire_node(name, lir, &[pa, pb])?[0];

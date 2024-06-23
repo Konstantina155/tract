@@ -1,6 +1,7 @@
 use super::*;
 use crate::internal::*;
 use crate::ops::Op;
+use crate::plan::PlanOptions;
 use crate::prelude::*;
 use std::fmt;
 use tract_data::internal::*;
@@ -429,7 +430,13 @@ where
 
     /// Computes an evalutation order for the graph inputs and outputs
     pub fn eval_order(&self) -> TractResult<Vec<usize>> {
-        eval_order(self)
+        super::order::eval_order(self)
+    }
+
+    /// Computes an evalutation order for the graph inputs and outputs. This order will minimize
+    /// temporary buffers.
+    pub fn eval_order_opt_ram(&self) -> TractResult<Vec<usize>> {
+        super::order::eval_order_opt_ram(self)
     }
 
     #[cfg(not(all(debug_assertions, feature = "paranoid_assertions")))]
@@ -485,9 +492,18 @@ where
         Ok(())
     }
 
-    /// Converts the model into a `RunnableModel` which fixes the inputs and outputs and allows passing data through the model.
+    /// Converts the model into a `RunnableModel` to actually process user data.
     pub fn into_runnable(self) -> TractResult<RunnableModel<F, O, Self>> {
-        crate::plan::SimplePlan::new(self)
+        crate::plan::SimplePlan::new_with_options(self, &PlanOptions::default())
+    }
+
+    /// Converts the model into a `RunnableModel` to actually process user data. This variant
+    /// accepts options.
+    pub fn into_runnable_with_options(
+        self,
+        options: &PlanOptions,
+    ) -> TractResult<RunnableModel<F, O, Self>> {
+        crate::plan::SimplePlan::new_with_options(self, options)
     }
 
     pub fn single_prec(&self, id: usize) -> TractResult<Option<&Node<F, O>>> {
@@ -554,16 +570,14 @@ where
             let input_1 =
                 self.nodes[i].inputs.first().map(|o| format!("{o:?}")).unwrap_or_default();
             let input_2 = self.nodes[i].inputs.get(1).map(|o| format!("{o:?}")).unwrap_or_default();
-            let output_1 = self
-                .outlet_successors(OutletId::new(i, 0))
+            let successors = self.nodes[i]
+                .outputs
                 .first()
-                .map(|o| format!("{o:?}"))
-                .unwrap_or_default();
-            let output_2 = self
-                .outlet_successors(OutletId::new(i, 0))
-                .get(1)
-                .map(|o| format!("{o:?}"))
-                .unwrap_or_default();
+                .iter()
+                .flat_map(|o| o.successors.iter())
+                .collect_vec();
+            let output_1 = successors.first().map(|o| format!("{o:?}")).unwrap_or_default();
+            let output_2 = successors.get(1).map(|o| format!("{o:?}")).unwrap_or_default();
             writeln!(
                 fmt,
                 "{:5} | {:8} {:8} -> {:8} {:8} | {:25} {:50} {:?} => {:?}",
@@ -585,7 +599,7 @@ where
                 )?;
             }
             if self.nodes[i].outputs.len() > 1
-                || self.outlet_successors((i, 0).into()).len() > 2
+                || successors.len() > 2
                 || (self.outlet_label(i.into()).is_some()
                     && self.outlet_label(i.into()).unwrap() != self.nodes[i].name)
             {

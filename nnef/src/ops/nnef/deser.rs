@@ -85,10 +85,19 @@ pub fn reshape(builder: &mut ModelBuilder, invocation: &ResolvedInvocation) -> T
     let start: usize = invocation.named_arg_as(builder, "axis_start")?;
     let count: i64 = invocation.named_arg_as(builder, "axis_count")?;
     let count = if count == -1 { input_shape.len() - start } else { count as usize };
-    let shape: TVec<TDim> =
+    let shape: TVec<Arc<Tensor>> =
         builder.allowing_new_symbols(|builder| invocation.named_arg_as(builder, "shape"))?;
-
-    let mut replacement = shape;
+    if shape.iter().any(|t| t.rank() > 0) {
+        warn!("Reshape called with invalid shape for node {:?}: {}. Flattening the shape will be deprecated.",
+              &builder.naming_scopes.iter().map(|i| &i.0).join("/"), shape.iter().map(|t| format!("{t:?}")).join(" ; "));
+    }
+    let mut replacement = tvec!();
+    for dims in shape {
+        let dims = dims.cast_to::<TDim>()?;
+        for dim in dims.as_slice::<TDim>()? {
+            replacement.push(dim.clone())
+        }
+    }
     for i in 0..replacement.len() {
         if replacement[i] == 0.to_dim() {
             replacement[i] = input_shape[i + start].clone();
@@ -121,11 +130,14 @@ pub fn transpose(
 pub fn concat(builder: &mut ModelBuilder, invocation: &ResolvedInvocation) -> TractResult<Value> {
     let axis: usize = invocation.named_arg_as(builder, "axis")?;
     let mut values: TVec<OutletId> = invocation.named_arg_as(builder, "values")?;
-    if let Some(Some(dt)) = invocation.dt_from_quant_file.first() {
-        for value in &mut values {
-            if builder.model.node(value.node).outputs[value.slot].fact.datum_type != *dt {
-                *value = builder.wire_as_outlets(ops::cast::cast(*dt), &[*value])?[0];
-            }
+    let dt = if let Some(dt) = invocation.dt_from_quant_file.first().and_then(|it| *it) {
+        dt
+    } else {
+        builder.model.outlet_fact(values[0])?.datum_type
+    };
+    for value in &mut values {
+        if builder.model.outlet_fact(*value)?.datum_type != dt {
+            *value = builder.wire_as_outlets(ops::cast::cast(dt), &[*value])?[0];
         }
     }
 
@@ -340,7 +352,8 @@ pub fn conv_or_deconv(
                 [0];
     }
 
-    let bias_dt = if input_fact.datum_type.is_float() { input_fact.datum_type } else { i32::datum_type() };
+    let bias_dt =
+        if input_fact.datum_type.is_float() { input_fact.datum_type } else { i32::datum_type() };
     bias = builder.model.wire_node(format!("{name}.cast_bias"), cast(bias_dt), &[bias])?[0];
 
     let mut inputs = tvec!(input, kernel, bias);

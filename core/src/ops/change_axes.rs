@@ -1,4 +1,5 @@
 use std::borrow::Borrow;
+use std::fmt::Debug;
 
 use crate::internal::*;
 use crate::model::{TypedModel, TypedNode};
@@ -22,7 +23,7 @@ impl InOut {
     }
 }
 
-#[derive(Clone, Debug, Hash, Eq)]
+#[derive(Clone, Hash, Eq)]
 #[allow(clippy::large_enum_variant)] // FIXME ?
 #[allow(clippy::derived_hash_with_manual_eq)] // FIXME. this one may be pretty bad. how about a.canonical() == b.canonical() ? need proper canonicalizeation of Reshape
 pub enum AxisOp {
@@ -30,6 +31,19 @@ pub enum AxisOp {
     Rm(usize),
     Move(usize, usize),
     Reshape(usize, TVec<TDim>, TVec<TDim>),
+}
+
+impl Debug for AxisOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AxisOp::Add(a) => write!(f, "Add({a})"),
+            AxisOp::Rm(a) => write!(f, "Rm({a})"),
+            AxisOp::Move(from, to) => write!(f, "Move({from},{to})"),
+            AxisOp::Reshape(at, from, to) => {
+                write!(f, "Reshape({at}, [{}], [{}])", from.iter().join(","), to.iter().join(","))
+            }
+        }
+    }
 }
 
 impl PartialEq for AxisOp {
@@ -56,6 +70,18 @@ impl AxisOp {
     pub fn canonical(&self) -> Cow<AxisOp> {
         match self {
             Move(from, to) if *from == to + 1 => Cow::Owned(Move(*to, *from)),
+            Reshape(at, from, to) if from.len() == 1 && to.len() == 2 && from[0] == to[0] => {
+                Cow::Owned(Add(*at + 1))
+            }
+            Reshape(at, from, to) if from.len() == 1 && to.len() == 2 && from[0] == to[1] => {
+                Cow::Owned(Add(*at))
+            }
+            Reshape(at, from, to) if from.len() == 2 && to.len() == 1 && from[0] == to[0] => {
+                Cow::Owned(Rm(*at + 1))
+            }
+            Reshape(at, from, to) if from.len() == 2 && to.len() == 1 && from[1] == to[0] => {
+                Cow::Owned(Rm(*at))
+            }
             other => Cow::Borrowed(other),
         }
     }
@@ -258,16 +284,25 @@ impl AxisOp {
         broadcasting: bool,
     ) -> TractResult<()> {
         match self.canonical().as_ref() {
-            Add(ix) => shape.insert(*ix, D::one()),
+            Add(ix) => {
+                ensure!(*ix <= shape.len());
+                shape.insert(*ix, D::one());
+            }
             Rm(ix) => {
+                ensure!(*ix < shape.len());
                 shape.remove(*ix);
             }
             Move(from, to) => {
+                ensure!(*from < shape.len());
+                ensure!(*to < shape.len());
                 let axis = shape.remove(*from);
                 shape.insert(*to, axis);
             }
             Reshape(at, from, to) => {
-                ensure!(from.iter().product::<TDim>() == to.iter().product::<TDim>());
+                let from_volume = from.iter().product::<TDim>();
+                let to_volume = to.iter().product::<TDim>();
+                ensure!(from_volume == to_volume, "{from_volume} should be equal to {to_volume}");
+                ensure!(*at + from.len() <= shape.len());
                 if shape.len() >= from.len() + *at
                     && tract_itertools::izip!(shape.iter().skip(*at), from)
                         .all(|(shape, spec)| shape.to_dim() == *spec)
@@ -546,7 +581,8 @@ impl TypedOp for AxisOp {
 
     fn output_facts(&self, inputs: &[&TypedFact]) -> TractResult<TVec<TypedFact>> {
         let mut shape = inputs[0].shape.clone();
-        self.change_shape(&mut shape, false)?;
+        self.change_shape(&mut shape, false)
+            .with_context(|| format!("Applying {self:?} to {:?}", inputs[0]))?;
         Ok(tvec!(inputs[0].datum_type.fact(shape)))
     }
 
@@ -679,6 +715,32 @@ impl TypedOp for AxisOp {
             self.clone()
         };
         target.wire_node(&node.name, op, &[mapping[&node.inputs[0]]])
+    }
+
+    fn codegen(
+        &self,
+        model: &TypedModel,
+        node: &TypedNode,
+    ) -> TractResult<Option<TypedModelPatch>> {
+        if let Some(shape) = node.outputs[0].fact.shape.as_concrete() {
+            if !matches!(self, AxisOp::Move(_, _)) {
+                let (inputs, outputs) = model.node_facts(node.id)?;
+                let mapping = self.axes_mapping(&inputs, &outputs)?;
+                let op = IntoShape {
+                    mapping,
+                    len: shape.iter().product(),
+                    strides: Tensor::natural_strides(shape),
+                    dims: shape.into(),
+                };
+                return Ok(Some(TypedModelPatch::replace_single_op(
+                    model,
+                    node,
+                    &node.inputs,
+                    op,
+                )?));
+            }
+        }
+        Ok(None)
     }
 }
 
@@ -837,6 +899,65 @@ pub fn to_axis_ops_with_tf_rules(
             stack.push(AxisOp::Rm(current_input.len() - 1));
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct IntoShape {
+    pub(crate) mapping: AxesMapping,
+    pub(crate) len: usize,
+    pub(crate) dims: TVec<usize>,
+    pub(crate) strides: TVec<isize>,
+}
+
+impl Op for IntoShape {
+    fn name(&self) -> Cow<str> {
+        "IntoShape".into()
+    }
+
+    fn info(&self) -> TractResult<Vec<String>> {
+        Ok(vec![format!("{}", self.mapping)])
+    }
+
+    op_as_typed_op!();
+    impl_op_same_as!();
+}
+
+impl EvalOp for IntoShape {
+    fn is_stateless(&self) -> bool {
+        true
+    }
+
+    fn eval(&self, inputs: TVec<TValue>) -> TractResult<TVec<TValue>> {
+        let mut input = args_1!(inputs).into_tensor();
+        ensure!(input.len() == self.len);
+        unsafe { input.set_geometry_unchecked(&self.dims, &self.strides) };
+        Ok(tvec!(input.into_tvalue()))
+    }
+}
+
+impl TypedOp for IntoShape {
+    fn output_facts(&self, inputs: &[&TypedFact]) -> TractResult<TVec<TypedFact>> {
+        Ok(tvec!(inputs[0].datum_type.fact(&self.dims)))
+    }
+
+    fn declutter(
+        &self,
+        model: &TypedModel,
+        node: &TypedNode,
+    ) -> TractResult<Option<TypedModelPatch>> {
+        if let Some(succ) = model.single_succ(node.id)? {
+            if let Some(into_shape) = succ.op_as::<IntoShape>() {
+                let op = Self {
+                    mapping: self.mapping.compose(&into_shape.mapping)?,
+                    ..into_shape.clone()
+                };
+                return Ok(Some(TypedModelPatch::fuse_with_next(model, node, op)?));
+            }
+        }
+        Ok(None)
+    }
+
+    as_op!();
 }
 
 #[cfg(test)]

@@ -29,10 +29,8 @@ pub fn wire_rank_broadcast(
     target: &mut TypedModel,
     inputs: &[OutletId],
 ) -> TractResult<TVec<OutletId>> {
-    let facts = inputs
-        .iter()
-        .map(|o| target.outlet_fact(*o).cloned())
-        .collect::<TractResult<TVec<_>>>()?;
+    let facts =
+        inputs.iter().map(|o| target.outlet_fact(*o).cloned()).collect::<TractResult<TVec<_>>>()?;
     let max_rank = facts.iter().map(|f| f.rank()).max().unwrap();
     let mut wires = tvec!();
     let prefix = prefix.as_ref();
@@ -55,7 +53,7 @@ pub fn wire_with_rank_broadcast(
 ) -> TractResult<TVec<OutletId>> {
     let prefix = prefix.as_ref();
     let wires = wire_rank_broadcast(prefix, target, inputs)?;
-    target.wire_node(prefix, &op.into(), &wires)
+    target.wire_node(prefix, op.into(), &wires)
 }
 
 pub trait BinMiniOp: fmt::Debug + dyn_clone::DynClone + Send + Sync + 'static + Downcast {
@@ -94,8 +92,7 @@ pub trait BinMiniOp: fmt::Debug + dyn_clone::DynClone + Send + Sync + 'static + 
             self.eval_unicast_in_place(&a, &mut b)?;
             Ok(b)
         } else {
-            let c_shape = crate::broadcast::multi_broadcast(&[a.shape(), b.shape()])
-                .ok_or_else(|| format_err!("Can not compute resulting shape"))?;
+            let c_shape = crate::broadcast::multi_broadcast(&[a.shape(), b.shape()])?;
             if &*c_shape == a.shape() && c_dt == a.datum_type() {
                 let mut a = a.into_tensor();
                 self.eval_in_a(&mut a, &b)?;
@@ -133,6 +130,11 @@ pub trait BinMiniOp: fmt::Debug + dyn_clone::DynClone + Send + Sync + 'static + 
     fn as_linalg_binop(&self) -> Option<tract_linalg::mmm::BinOp> {
         None
     }
+
+    #[allow(unused_variables)]
+    fn same_as(&self, other: &dyn BinMiniOp) -> bool {
+        false
+    }
 }
 dyn_clone::clone_trait_object!(BinMiniOp);
 downcast_rs::impl_downcast!(BinMiniOp);
@@ -147,6 +149,11 @@ impl Op for TypedBinOp {
 
     fn validation(&self) -> Validation {
         self.0.validation()
+    }
+
+    fn same_as(&self, other: &dyn Op) -> bool {
+        let Some(other) = other.downcast_ref::<TypedBinOp>() else { return false };
+        self.1 == other.1 && self.0.same_as(&*other.0)
     }
 
     op_as_typed_op!();
@@ -181,17 +188,10 @@ impl TypedOp for TypedBinOp {
             bail!("Typed ops require rank match. Invalid inputs for {}: {:?}", self.name(), inputs);
         }
         let out_dt = self.output_datum_type(inputs[0].datum_type, inputs[1].datum_type)?;
-        Ok(tvec!(out_dt.fact(
-            &*crate::broadcast::multi_broadcast(&[
-                &inputs[0].shape.to_tvec(),
-                &inputs[1].shape.to_tvec()
-            ])
-            .ok_or_else(|| format_err!(
-                "Can not broadcast shapes a:{:?} b:{:?}",
-                &inputs[0],
-                &inputs[1]
-            ))?
-        )))
+        Ok(tvec!(out_dt.fact(&*crate::broadcast::multi_broadcast(&[
+            &inputs[0].shape.to_tvec(),
+            &inputs[1].shape.to_tvec()
+        ])?)))
     }
 
     fn change_axes(
@@ -348,6 +348,10 @@ macro_rules! bin_to_super_type {
         impl $crate::ops::binary::BinMiniOp for $Op {
             fn name(&self) -> &'static str {
                 stringify!($Op)
+            }
+
+            fn same_as(&self, other: &dyn $crate::ops::binary::BinMiniOp) -> bool {
+                other.downcast_ref::<$Op>().is_some()
             }
 
             fn eval_uniform_in_place(&self, a: &Tensor, b: &mut Tensor) -> TractResult<()> {
@@ -568,8 +572,7 @@ macro_rules! bin_to_super_type {
                             let c_inv_scale = 1.0 / c_scale;
                             let a = a.to_array_view::<u8>()?;
                             let b = b.to_array_view::<u8>()?;
-                            let c_shape = $crate::broadcast::multi_broadcast(&[a.shape(), b.shape()])
-                                .context("no broadcast solution")?;
+                            let c_shape = $crate::broadcast::multi_broadcast(&[a.shape(), b.shape()])?;
                             let mut c = Tensor::zero_dt(*c_dt, &c_shape)?;
                             let view = c.to_array_view_mut::<u8>()?;
                             $crate::ndarray::Zip::from(view).and_broadcast(a).and_broadcast(b).for_each(|c, a, b| {
@@ -597,8 +600,7 @@ macro_rules! bin_to_super_type {
                         if a.datum_type().is_quantized() && b.datum_type().is_quantized() && c_dt.is_quantized() {
                             let a = a.cast_to_dt(accumulator_dt)?.into_owned();
                             let b = b.cast_to_dt(accumulator_dt)?.into_owned();
-                            let c_shape = $crate::broadcast::multi_broadcast(&[a.shape(), b.shape()])
-                                .context("no broadcast solution")?;
+                            let c_shape = $crate::broadcast::multi_broadcast(&[a.shape(), b.shape()])?;
                             let mut c = Tensor::zero_dt(accumulator_dt, &c_shape)?;
                             match accumulator_dt {
                                 DatumType::F32 => {

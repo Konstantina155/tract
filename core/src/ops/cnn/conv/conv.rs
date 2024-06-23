@@ -1,5 +1,4 @@
 use tract_data::itertools::izip;
-use tract_linalg::mmm::InputStoreSpec;
 use tract_num_traits::Zero;
 
 use crate::internal::*;
@@ -9,6 +8,8 @@ use crate::ops::array::Pad;
 use crate::ops::array::PadMode;
 use crate::ops::binary::TypedBinOp;
 use crate::ops::cast::cast;
+use crate::ops::cnn::conv::lazy_im2col::LazyIm2Col;
+use crate::ops::cnn::conv::lazy_im2col::LazyIm2colParams;
 use crate::ops::cnn::wire_reshape_bias_for_bin;
 use crate::ops::cnn::PaddingSpec::*;
 use crate::ops::einsum::EinSum;
@@ -22,7 +23,6 @@ use crate::ops::nn::Reduce;
 
 use super::depth_wise::DepthWise;
 use super::im2col::Im2Col;
-use super::lazy_im2col::LazyIm2colSpec;
 use crate::ops::cnn::conv::KernelFormat;
 use crate::ops::cnn::pools::{ConcretePoolGeometry, PoolGeometry, PoolSpec};
 use crate::ops::matmul::lir_unary::{LirMatMulUnary, ProtoFusedSpec};
@@ -75,16 +75,13 @@ impl Conv {
         model: &mut TypedModel,
         name: &str,
         packer: Packer,
-        mut kernel: OutletId,
+        kernel: OutletId,
     ) -> TractResult<OutletId> {
-        let kernel_shape = &model.outlet_fact(kernel)?.shape;
-        let output_shape_fact = MatMatMulPack::output_shape(kernel_shape, &packer, 1, 2);
-        kernel = model.wire_node(
+        Ok(model.wire_node(
             format!("{name}.prep_kernel.pack"),
-            MatMatMulPack { packer, k_axis: 2, mn_axis: 1, output_shape_fact },
+            MatMatMulPack { packer, k_axis: 2, mn_axis: 1 },
             &[kernel],
-        )?[0];
-        Ok(kernel)
+        )?[0])
     }
 
     // group,bias
@@ -97,7 +94,7 @@ impl Conv {
     ) -> TractResult<(ProtoFusedSpec, OutletId)> {
         use tract_linalg::mmm::BinOp::Add;
         let fact = model.outlet_fact(bias)?;
-        if fact.shape.volume().is_one() || fact.uniform.is_some() {
+        if fact.shape.volume().is_one() {
             Ok((ProtoFusedSpec::BinScalar(2, Add), bias))
         } else {
             let bias = AxisOp::wire_split_axis(
@@ -134,6 +131,7 @@ impl Conv {
         let b_fact = model.outlet_fact(x)?.clone();
 
         let (_, _, k, n, mmm) = self.compute_geo(&a_fact, &b_fact)?;
+        let packing = 1; // FIXME
         let output_shape = self.pool_spec.output_shape(&b_fact.shape)?;
 
         if !model.outlet_fact(k_scale)?.shape.volume().is_one() {
@@ -167,8 +165,11 @@ impl Conv {
         let sum_ker_a_g_c =
             model.wire_node(format!("{name}.rm_k"), AxisOp::Rm(2), &sum_ker_g_c_k)?;
         // align sum_A from G,C to "C" shape: N,HW,G,C (or N,G,C,HW)
-        let sum_ker_n_g_c =
-            model.wire_node(format!("{name}.sum_ker_n_g_c.axis_0"), AxisOp::Add(0), &sum_ker_a_g_c)?;
+        let sum_ker_n_g_c = model.wire_node(
+            format!("{name}.sum_ker_n_g_c.axis_0"),
+            AxisOp::Add(0),
+            &sum_ker_a_g_c,
+        )?;
         let hw_position = if self.pool_spec.data_format.c_is_last() { 1 } else { 3 };
         let sum_ker = model.wire_node(
             format!("{name}.sum_ker_n_g_c"),
@@ -176,9 +177,10 @@ impl Conv {
             &sum_ker_n_g_c,
         )?;
 
+        ensure!(mmm.packings()[packing].1.downcast_ref::<Packer>().is_some());
         let mut sum_x = model.wire_node(
             format!("{name}.sum_x"),
-            super::QSumB { n, r: mmm.b_pack().panel_width(), k },
+            super::QSumB { dt: b_fact.datum_type, n, r: mmm.nr(), k },
             &[im2col],
         )?;
         // sum_b is N,G,HW. make it N,HW,G,C or N,G,C,HW
@@ -188,9 +190,7 @@ impl Conv {
                 model.wire_node(format!("{name}.transpose_sum_b"), AxisOp::Move(3, 1), &sum_x)?;
         }
 
-        let x_dt = model.outlet_fact(x)?.datum_type;
         let (mmm_output_shape, c_axis, h_axis) = self.mmm_output_shape(&output_shape)?;
-        let b_storage = unsafe { mmm.b_packed(x_dt.size_of(), k) };
         let bias =
             model.wire_node(format!("{name}.cast_bias"), cast(mmm.internal_type()), &[bias])?[0];
         let wire = self.wire_mm_weights_bias(
@@ -200,12 +200,12 @@ impl Conv {
             g_o_ihw[0],
             bias,
             mmm,
+            packing,
             i32::datum_type(),
             mmm_output_shape.clone().into(),
             k,
             c_axis,
             h_axis,
-            b_storage,
         )?;
 
         let wire = qmm::compensate_zero_points(
@@ -271,8 +271,6 @@ impl Conv {
             &[wire[0], padding],
         )?[0];
 
-        let b_storage = unsafe { mmm.b_packed(b_dt.size_of(), k) };
-
         let g_o_ihw = self.wire_kernel_as_g_o_ihw(model, name, wire[1])?;
 
         let wire = self
@@ -283,12 +281,12 @@ impl Conv {
                 g_o_ihw[0],
                 bias,
                 mmm,
+                0,
                 c_dt,
                 mmm_output_shape.clone().into(),
                 k.to_usize().unwrap(),
                 c_axis,
                 h_axis,
-                b_storage,
             )
             .context("in wire_lir_matmatmul")?;
 
@@ -363,7 +361,8 @@ impl Conv {
         let mut x_fact = model.outlet_fact(x)?.clone();
         let k_fact = model.outlet_fact(kernel)?.clone();
         let (geo, m, k, n, mmm) = self.compute_geo(&k_fact, &x_fact)?;
-        debug!("{name} as lazy_im2col: m={m} k={k} n={n} {mmm}");
+        let packing = 0;
+        debug!("{name} as lazy_im2col: m={m} k={k} n={n} {mmm:?}");
         let input_shape = x_fact.shape.as_concrete().unwrap().to_vec();
         let mut geo = geo.to_concrete(&input_shape)?.into_owned();
         let mut input_shape: DataShape = self.pool_spec.data_format.shape(input_shape.into())?;
@@ -392,9 +391,9 @@ impl Conv {
         let c_dt = crate::ops::matmul::output_type(x_fact.datum_type);
         let c_stride = input_shape.c_stride();
         let size_of_b = x_fact.datum_type.size_of() as isize;
-        let n_bytes_offsets: Vec<isize> =
+        let n_byte_offsets: Vec<isize> =
             geo.patch.centers_offsets().into_iter().map(|x| x * size_of_b).collect();
-        let k_bytes_offsets: Vec<isize> = (0..self.input_channels())
+        let k_byte_offsets: Vec<isize> = (0..self.input_channels())
             .flat_map(|ici| {
                 geo.patch
                     .standard_layout_data_field
@@ -402,9 +401,23 @@ impl Conv {
                     .map(move |x| (x + (ici * c_stride) as isize) * size_of_b)
             })
             .collect();
-        let b_storage =
-            Box::new(LazyIm2colSpec { packer: mmm.b_pack(), n_bytes_offsets, k_bytes_offsets });
         let (mmm_output_shape, c_axis, h_axis) = self.mmm_output_shape(&geo.output_shape)?;
+        let packer = mmm.packings()[packing]
+            .1
+            .downcast_ref::<Packer>()
+            .with_context(|| {
+                format_err!(
+                    "Quand Im2Col expects regular packed format, got {:?}",
+                    mmm.packings()[packing].1
+                )
+            })?
+            .clone();
+        let params = LazyIm2colParams { packer, n_byte_offsets, k_byte_offsets };
+        let x = model.wire_node(
+            format!("{name}.lazyIm2col"),
+            LazyIm2Col { params: Arc::new(params) },
+            &[x],
+        )?[0];
 
         let kernel = self.wire_kernel_as_g_o_ihw(model, name, kernel)?[0];
         let wire = self.wire_mm_weights_bias(
@@ -414,12 +427,12 @@ impl Conv {
             kernel,
             bias,
             mmm,
+            packing,
             c_dt,
             mmm_output_shape.clone().into(),
             k,
             c_axis,
             h_axis,
-            b_storage,
         )?;
 
         let wire = self.wire_remove_group(model, name, &wire, &mmm_output_shape, c_axis)?;
@@ -462,19 +475,22 @@ impl Conv {
         g_o_ihw: OutletId,
         bias: OutletId,
         mmm: Box<dyn MatMatMul>,
+        packing: usize,
         c_datum_type: DatumType,
         mmm_output_shape: ShapeFact,
         k: usize,
         c_m_axis: usize,
         c_n_axis: usize,
-        b_storage: Box<dyn InputStoreSpec>,
     ) -> TractResult<TVec<OutletId>> {
         ensure!(model.outlet_fact(bias)?.datum_type == mmm.internal_type());
+        let a_pack = mmm.packings()[packing]
+            .0
+            .downcast_ref::<Packer>()
+            .context("Conv expects wights in regular packed format")?
+            .clone();
         let packed_ker = self
-            .wire_pack_g_o_ihw(model, name, mmm.a_pack(), g_o_ihw)
+            .wire_pack_g_o_ihw(model, name, a_pack, g_o_ihw)
             .context("in kernel_as_packed_as")?;
-        let a_dt = model.outlet_fact(packed_ker)?.datum_type;
-        let a_storage = unsafe { mmm.a_packed(a_dt.size_of(), k) };
         let (mut c_to_a_axis_mapping, mut c_to_b_axis_mapping) = (tvec!(), tvec!());
 
         c_to_a_axis_mapping.push((c_m_axis - 1, 0)); // Group
@@ -483,16 +499,15 @@ impl Conv {
 
         let geo = AddMatMulGeometry {
             k: k.to_dim(),
-            a_storage: Some(a_storage),
-            b_storage: Some(b_storage),
             mmm: mmm.clone(),
             c_to_a_axis_mapping: MapOutputAxisToInput(c_to_a_axis_mapping),
             c_to_b_axis_mapping: MapOutputAxisToInput(c_to_b_axis_mapping),
         };
+        let mut ops: Vec<ProtoFusedSpec> =
+            vec![ProtoFusedSpec::AddMatMul { geo, a: 1, b: 0, packing }];
         let mut wires: TVec<OutletId> = tvec!(input, packed_ker);
-        let mut ops: Vec<ProtoFusedSpec> = vec![ProtoFusedSpec::AddMatMul(geo, 1, 0)];
         let bias_fact = model.outlet_fact(bias)?;
-        if bias_fact.konst.is_none() || !bias_fact.konst.as_ref().unwrap().is_zero()? {
+        if bias_fact.konst.is_none() || !dbg!(bias_fact.konst.as_ref().unwrap().is_all_zero()?) {
             let (fused, bias) = self.wire_bias_as_non_linear(model, name, bias, c_m_axis - 1)?;
             wires.push(bias);
             ops.push(fused);
@@ -844,12 +859,12 @@ impl TypedOp for Conv {
         }
         ensure!(
             inputs[2].rank() == 0
-                || (inputs[2].rank() == 1
-                    && inputs[2].shape.volume() == self.output_channels().to_dim()),
-            "Bias should be scalar or a vector with one value per output channel. Output channels is {}, bias is {:?}",
-            self.output_channels(),
-            inputs[2]
-        );
+            || (inputs[2].rank() == 1
+                && inputs[2].shape.volume() == self.output_channels().to_dim()),
+                "Bias should be scalar or a vector with one value per output channel. Output channels is {}, bias is {:?}",
+                self.output_channels(),
+                inputs[2]
+               );
         let mut fact = self.pool_spec.output_facts(inputs)?.remove(0);
         if let Some(dt) = self.q_params {
             fact.datum_type = dt;
@@ -1116,8 +1131,10 @@ impl TypedOp for Conv {
     as_op!();
 }
 
-fn should_use_lazy(_input_shape: &DataShape, pool_spec: &PoolSpec, group: usize) -> bool {
-    group == 1 && pool_spec.kernel_shape.iter().product::<usize>() > 5
+fn should_use_lazy(input_shape: &DataShape, pool_spec: &PoolSpec, group: usize) -> bool {
+    input_shape.n().unwrap_or(&1) == &1
+        && group == 1
+        && pool_spec.kernel_shape.iter().product::<usize>() > 5
 }
 
 #[allow(non_snake_case)]

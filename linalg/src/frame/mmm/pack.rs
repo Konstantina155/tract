@@ -4,16 +4,36 @@ use std::marker::PhantomData;
 use std::ops::Range;
 use tract_data::internal::*;
 
+use crate::mmm::{EagerPackedInput, MMMInput};
+
+use super::MMMInputFormat;
+
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Packer {
+    pub dt: DatumType,
     pub r: usize,
-    alignment: usize,
-    end_padding_record: usize,
+    pub alignment: usize,
+    pub end_padding_record: usize,
+}
+
+impl MMMInputFormat for Packer {
+    fn can_prepare_types(&self) -> Vec<DatumType> {
+        vec!(self.dt)
+    }
+
+    fn prepare_tensor(
+        &self,
+        t: &Tensor,
+        k_axis: usize,
+        mn_axis: usize,
+    ) -> TractResult<Box<dyn MMMInput>> {
+        Packer::pack_tensor(self, t, k_axis, mn_axis)
+    }
 }
 
 impl Packer {
-    pub fn new(nr: usize, alignment: usize, end_padding_record: usize) -> Packer {
-        Packer { r: nr, alignment, end_padding_record }
+    pub const fn new(dt: DatumType, nr: usize, alignment: usize, end_padding_record: usize) -> Packer {
+        Packer { dt, r: nr, alignment, end_padding_record }
     }
 
     #[inline]
@@ -42,7 +62,81 @@ impl Packer {
         Layout::from_size_align(self.single_panel_len(k) * item_size, self.alignment()).unwrap()
     }
 
+    pub fn pack_tensor(
+        &self,
+        t: &Tensor,
+        k_axis: usize,
+        mn_axis: usize,
+    ) -> TractResult<Box<dyn MMMInput>> {
+        ensure!(t.datum_type().unquantized() == self.dt.unquantized());
+        let k = t.shape()[k_axis];
+        let mn = t.shape()[mn_axis];
+        let packed_len = self.len(k, mn);
+        let panel_len = self.single_panel_len(k);
+        let panel_bytes = panel_len * t.datum_type().size_of();
+        let strides = t.strides();
+        unsafe {
+            let mut packed =
+                Tensor::uninitialized_aligned_dt(t.datum_type(), &[packed_len], self.alignment())?;
+            dispatch_copy!(Self::pack_t(t.datum_type())(
+                self,
+                packed.as_ptr_mut_unchecked(),
+                t.as_ptr_unchecked(),
+                mn,
+                strides[k_axis],
+                strides[mn_axis],
+                0..k,
+                0..mn
+            ));
+            Ok(Box::new(EagerPackedInput { packed, panel_bytes, mn, k, r: self.r }))
+        }
+    }
+
+    pub fn pack_tensor_view(
+        &self,
+        t: &TensorView,
+        k_axis: usize,
+        mn_axis: usize,
+    ) -> TractResult<Box<dyn MMMInput>> {
+        ensure!(t.datum_type().unquantized() == self.dt.unquantized());
+        let k = t.shape()[k_axis];
+        let mn = t.shape()[mn_axis];
+        let packed_len = self.len(k, mn);
+        let panel_len = self.single_panel_len(k);
+        let panel_bytes = panel_len * t.datum_type().size_of();
+        let strides = t.strides();
+        unsafe {
+            let mut packed =
+                Tensor::uninitialized_aligned_dt(t.datum_type(), &[packed_len], self.alignment())?;
+            dispatch_copy!(Self::pack_t(t.datum_type())(
+                self,
+                packed.as_ptr_mut_unchecked(),
+                t.as_ptr_unchecked(),
+                mn,
+                strides[k_axis],
+                strides[mn_axis],
+                0..k,
+                0..mn
+            ));
+            Ok(Box::new(EagerPackedInput { packed, panel_bytes, mn, k, r: self.r }))
+        }
+    }
+
+    pub unsafe fn pack<'a, 'b>(
+        &self,
+        pb: impl std::borrow::BorrowMut<TensorView<'a>>,
+        b: impl std::borrow::Borrow<TensorView<'b>>,
+        k_axis: usize,
+        mn_axis: usize,
+    ) {
+        let k = b.borrow().shape()[k_axis];
+        let mn = b.borrow().shape()[mn_axis];
+        self.pack_segment(pb, b, k_axis, mn_axis, 0..k, 0..mn);
+    }
+
+
     #[allow(clippy::too_many_arguments)]
+    #[rustfmt::skip]
     pub unsafe fn pack_t<T: Datum + Copy>(
         &self,
         pb: *mut T,
@@ -52,7 +146,7 @@ impl Packer {
         mn_stride: isize,
         k_range: Range<usize>,
         mn_range: Range<usize>,
-    ) {
+        ) {
         if self.r == 1 && k_stride == 1 && mn == 1 {
             pb.copy_from_nonoverlapping(b.add(k_range.start), k_range.len())
         } else if mn_stride == 1 {
@@ -63,12 +157,13 @@ impl Packer {
             let k_stride_bytes = k_stride * size_of as isize;
             let bb = b as *const u8;
             let pbb = pb as *mut u8;
+            let panel_len = self.single_panel_len(k_range.len()) * size_of;
             match rbytes {
-                16 => pack_mn_major::<[u8; 16]>(bb, pbb, k_stride_bytes, mn_range_bytes, k_range),
-                24 => pack_mn_major::<[u8; 24]>(bb, pbb, k_stride_bytes, mn_range_bytes, k_range),
-                32 => pack_mn_major::<[u8; 32]>(bb, pbb, k_stride_bytes, mn_range_bytes, k_range),
-                48 => pack_mn_major::<[u8; 48]>(bb, pbb, k_stride_bytes, mn_range_bytes, k_range),
-                64 => pack_mn_major::<[u8; 64]>(bb, pbb, k_stride_bytes, mn_range_bytes, k_range),
+                16 => pack_mn_major::<[u8; 16]>(bb, pbb, panel_len, k_stride_bytes, mn_range_bytes, k_range),
+                24 => pack_mn_major::<[u8; 24]>(bb, pbb, panel_len, k_stride_bytes, mn_range_bytes, k_range),
+                32 => pack_mn_major::<[u8; 32]>(bb, pbb, panel_len, k_stride_bytes, mn_range_bytes, k_range),
+                48 => pack_mn_major::<[u8; 48]>(bb, pbb, panel_len, k_stride_bytes, mn_range_bytes, k_range),
+                64 => pack_mn_major::<[u8; 64]>(bb, pbb, panel_len, k_stride_bytes, mn_range_bytes, k_range),
                 _ => {
                     let mut packer = self.write_with_k_outer(pb, k_range.len(), mn_range.len());
                     for k in k_range {
@@ -104,6 +199,7 @@ impl Packer {
         }
     }
 
+    #[inline]
     pub unsafe fn pack_segment<'a, 'b>(
         &self,
         mut pb: impl std::borrow::BorrowMut<TensorView<'a>>,
@@ -129,25 +225,13 @@ impl Packer {
         ));
     }
 
-    pub unsafe fn pack<'a, 'b>(
-        &self,
-        pb: impl std::borrow::BorrowMut<TensorView<'a>>,
-        b: impl std::borrow::Borrow<TensorView<'b>>,
-        k_axis: usize,
-        mn_axis: usize,
-    ) {
-        let k = b.borrow().shape()[k_axis];
-        let mn = b.borrow().shape()[mn_axis];
-        self.pack_segment(pb, b, k_axis, mn_axis, 0..k, 0..mn);
-    }
-
     pub fn write_with_k_outer<'p, T: Copy + Debug>(
         &self,
         pb: *mut T,
         k: usize,
         mn: usize,
     ) -> KOutWriter<'p, T> {
-        KOutWriter::new(pb, self.r, mn, k)
+        KOutWriter::new(pb, self.r, self.single_panel_len(k), mn, k)
     }
 
     pub fn write_single_panel_with_k_outer<'p, T: Copy + Debug>(
@@ -163,7 +247,8 @@ impl Packer {
         k: usize,
         mn: usize,
     ) -> KInWriter<'p, T> {
-        KInWriter::new(pb, self.r, mn, k)
+        let panel_len = self.single_panel_len(k);
+        KInWriter::new(pb, panel_len, self.r, mn, k)
     }
 }
 
@@ -222,7 +307,13 @@ impl<'p, T> KOutWriter<'p, T>
 where
     T: Copy + std::fmt::Debug,
 {
-    pub fn new(ptr: *mut T, panel_width: usize, mn: usize, k: usize) -> KOutWriter<'p, T> {
+    pub fn new(
+        ptr: *mut T,
+        panel_width: usize,
+        panel_len: usize,
+        mn: usize,
+        _k: usize,
+    ) -> KOutWriter<'p, T> {
         let panels = (mn + panel_width - 1) / panel_width;
         let last_panel_width = mn - (panels - 1) * panel_width;
         KOutWriter {
@@ -232,9 +323,9 @@ where
             last_panel_width,
             remain: if panels > 1 { panel_width } else { last_panel_width },
             current_panel: 0,
-            next_panel: ((k - 1) * panel_width) as isize,
-            next_lane: panel_width as isize
-                - ((last_panel_width + (panels - 1) * panel_width * k) as isize),
+            next_panel: (panel_len - panel_width) as isize,
+            next_lane: (panel_width - last_panel_width) as isize
+                - (panel_len * (panels - 1)) as isize,
             _phantom: PhantomData,
         }
     }
@@ -290,7 +381,13 @@ impl<'p, T> KInWriter<'p, T>
 where
     T: Copy + Debug,
 {
-    pub fn new(ptr: *mut T, panel_width: usize, mn: usize, k: usize) -> KInWriter<'p, T> {
+    pub fn new(
+        ptr: *mut T,
+        panel_len: usize,
+        panel_width: usize,
+        mn: usize,
+        k: usize,
+    ) -> KInWriter<'p, T> {
         let panels = (mn + panel_width - 1) / panel_width;
         let last_panel_width = mn - (panels - 1) * panel_width;
         KInWriter {
@@ -303,7 +400,8 @@ where
             remain_on_mn: if panels == 1 { last_panel_width } else { panel_width },
             current_panel: 0,
             next_mn_offset: 1 - (k * panel_width) as isize,
-            next_panel_offset: 1 - panel_width as isize,
+            next_panel_offset: panel_len as isize - (k * panel_width + panel_width - 1) as isize,
+            //                 ^ next panel     ^    ^ rewind left ^   ^ rewind up   ^
             _phantom: PhantomData,
         }
     }
@@ -342,6 +440,7 @@ where
 unsafe fn pack_mn_major<Chunk: Copy>(
     b: *const u8,
     packed: *mut u8,
+    panel_len: usize,
     k_stride_bytes: isize,
     mn_range_bytes: Range<usize>,
     k_range: Range<usize>,
@@ -355,7 +454,7 @@ unsafe fn pack_mn_major<Chunk: Copy>(
             b.offset((k_range.start + k) as isize * k_stride_bytes + mn_range_bytes.start as isize);
         for _ in 0..full_panes {
             p_row.copy_from_nonoverlapping(b_row, mnr);
-            p_row = p_row.add(k_range.len() * mnr);
+            p_row = p_row.add(panel_len);
             b_row = b_row.add(mnr);
         }
         if partial_pane > 0 {
@@ -369,6 +468,8 @@ mod test {
     use std::ops::Range;
 
     use proptest::prelude::*;
+    use tract_data::internal::num_integer::Integer;
+    use tract_data::internal::tract_ndarray::Zip;
     use tract_data::internal::*;
     use tract_ndarray::prelude::*;
 
@@ -380,6 +481,7 @@ mod test {
         r: usize,
         k_range: Range<usize>,
         mn_range: Range<usize>,
+        align_panel: usize,
     }
 
     impl PackProblem {
@@ -389,10 +491,11 @@ mod test {
             Array2::from_shape_vec(shape, data).unwrap()
         }
 
-        fn packer(&self) -> Array3<u32> {
+        fn packer(&self) -> Array2<u32> {
             let panels = self.mn_range.len().divceil(self.r);
-            let packer = super::Packer::new(self.r, 1, 0);
+            let packer = super::Packer::new(u32::datum_type(), self.r, self.align_panel, 0);
             let input = self.input().into_tensor();
+            let panel_len = packer.single_panel_len(self.k_range.len());
             let mut output =
                 Tensor::zero::<u32>(&[packer.len(self.k_range.len(), self.mn_range.len())])
                     .unwrap();
@@ -406,30 +509,44 @@ mod test {
                     self.mn_range.clone(),
                 )
             };
-            output
-                .into_array::<u32>()
-                .unwrap()
-                .into_shape((panels, self.k_range.len(), self.r))
-                .unwrap()
+            output.into_array::<u32>().unwrap().into_shape((panels, panel_len)).unwrap()
         }
 
-        fn reference(&self) -> Array3<u32> {
+        fn reference(&self) -> Array2<u32> {
             let input = self.input();
             let panels = self.mn_range.len().divceil(self.r);
-            Array3::from_shape_fn([panels, self.k_range.len(), self.r], |(panel, k, x)| {
-                if self.mn_range.start + panel * self.r + x >= self.mn_range.end {
-                    0
-                } else {
-                    let mn = panel * self.r + x + self.mn_range.start;
-                    let k = k + self.k_range.start;
-                    let coords = if self.is_a { (mn, k) } else { (k, mn) };
-                    *input.get(coords).unwrap_or(&0)
-                }
+            let len = Integer::next_multiple_of(&(self.k_range.len() * self.r), &self.align_panel);
+            Array2::from_shape_fn([panels, len], |(panel, z)| {
+                let k = z / self.r;
+                let x = z % self.r;
+                let mn = panel * self.r + x + self.mn_range.start;
+                let k = k + self.k_range.start;
+                let coords = if self.is_a { (mn, k) } else { (k, mn) };
+                *input.get(coords).unwrap_or(&0)
+            })
+        }
+
+        fn valid(&self) -> Array2<bool> {
+            let panels = self.mn_range.len().divceil(self.r);
+            let len = Integer::next_multiple_of(&(self.k_range.len() * self.r), &self.align_panel);
+            Array2::from_shape_fn([panels, len], |(panel, z)| {
+                let k = z / self.r;
+                let x = z % self.r;
+                let k = k + self.k_range.start;
+                let mn = panel * self.r + x + self.mn_range.start;
+                k < self.k_range.end.min(self.k) && mn < self.mn_range.end.min(self.mn)
             })
         }
 
         fn check(&self) {
-            assert_eq!(self.packer(), self.reference())
+            let mut packer = self.packer();
+            let mut reference = self.reference();
+            let valid = self.valid();
+            Zip::from(&mut packer).and(&valid).for_each(|p, v| *p = if *v { *p } else { -1 as _ });
+            Zip::from(&mut reference)
+                .and(&valid)
+                .for_each(|p, v| *p = if *v { *p } else { -1 as _ });
+            assert_eq!(packer, reference);
         }
     }
 
@@ -439,15 +556,21 @@ mod test {
         fn arbitrary_with(_args: ()) -> Self::Strategy {
             (any::<bool>(), 1usize..9, 1usize..20, 1usize..20)
                 .prop_flat_map(|(is_a, r, k, mn)| {
-                    (Just((is_a, r, k, mn)), sub_range_strat(0..k), sub_range_strat(0..mn))
+                    (
+                        Just((is_a, r, k, mn)),
+                        sub_range_strat(0..k),
+                        sub_range_strat(0..mn),
+                        1usize..5,
+                    )
                 })
-                .prop_map(|((is_a, r, k, mn), k_range, mn_range)| PackProblem {
+                .prop_map(|((is_a, r, k, mn), k_range, mn_range, align_panel)| PackProblem {
                     k,
                     mn,
                     is_a,
                     r,
                     k_range,
                     mn_range,
+                    align_panel,
                 })
                 .boxed()
         }
@@ -474,56 +597,253 @@ mod test {
 
     #[test]
     fn simple_b_1() {
-        PackProblem { k: 2, mn: 1, is_a: false, r: 1, k_range: 0..2, mn_range: 0..1 }.check();
+        PackProblem {
+            k: 2,
+            mn: 1,
+            is_a: false,
+            r: 1,
+            k_range: 0..2,
+            mn_range: 0..1,
+            align_panel: 1,
+        }
+        .check();
     }
 
     #[test]
     fn simple_b_2() {
-        PackProblem { k: 2, mn: 2, is_a: false, r: 1, k_range: 0..2, mn_range: 0..2 }.check()
+        PackProblem {
+            k: 2,
+            mn: 2,
+            is_a: false,
+            r: 1,
+            k_range: 0..2,
+            mn_range: 0..2,
+            align_panel: 1,
+        }
+        .check()
     }
 
     #[test]
     fn simple_b_3() {
-        PackProblem { k: 2, mn: 1, is_a: false, r: 4, k_range: 0..2, mn_range: 0..1 }.check();
+        PackProblem {
+            k: 2,
+            mn: 1,
+            is_a: false,
+            r: 4,
+            k_range: 0..2,
+            mn_range: 0..1,
+            align_panel: 1,
+        }
+        .check();
+    }
+
+    #[test]
+    fn simple_b_4() {
+        PackProblem {
+            k: 1,
+            mn: 3,
+            is_a: false,
+            r: 2,
+            k_range: 0..1,
+            mn_range: 0..3,
+            align_panel: 1,
+        }
+        .check();
     }
 
     #[test]
     fn simple_a_1() {
-        PackProblem { k: 2, mn: 2, is_a: true, r: 1, k_range: 0..2, mn_range: 0..2 }.check();
+        PackProblem {
+            k: 2,
+            mn: 2,
+            is_a: true,
+            r: 1,
+            k_range: 0..2,
+            mn_range: 0..2,
+            align_panel: 1,
+        }
+        .check();
     }
 
     #[test]
     fn simple_a_2() {
-        PackProblem { k: 2, mn: 3, is_a: true, r: 2, k_range: 0..2, mn_range: 0..3 }.check();
+        PackProblem {
+            k: 2,
+            mn: 3,
+            is_a: true,
+            r: 2,
+            k_range: 0..2,
+            mn_range: 0..3,
+            align_panel: 1,
+        }
+        .check();
     }
 
     #[test]
     fn range_k_0() {
-        PackProblem { k: 2, mn: 1, is_a: false, r: 1, k_range: 1..2, mn_range: 0..1 }.check();
+        PackProblem {
+            k: 2,
+            mn: 1,
+            is_a: false,
+            r: 1,
+            k_range: 1..2,
+            mn_range: 0..1,
+            align_panel: 1,
+        }
+        .check();
     }
 
     #[test]
     fn range_k_1() {
-        PackProblem { k: 2, mn: 2, is_a: false, r: 1, k_range: 0..2, mn_range: 0..1 }.check();
+        PackProblem {
+            k: 2,
+            mn: 2,
+            is_a: false,
+            r: 1,
+            k_range: 0..2,
+            mn_range: 0..1,
+            align_panel: 1,
+        }
+        .check();
     }
 
     #[test]
     fn range_k_2() {
-        PackProblem { k: 2, mn: 1, is_a: false, r: 6, k_range: 1..2, mn_range: 0..1 }.check();
+        PackProblem {
+            k: 2,
+            mn: 1,
+            is_a: false,
+            r: 6,
+            k_range: 1..2,
+            mn_range: 0..1,
+            align_panel: 1,
+        }
+        .check();
     }
 
     #[test]
     fn range_mn_0() {
-        PackProblem { k: 1, mn: 2, is_a: false, r: 2, k_range: 0..1, mn_range: 0..1 }.check();
+        PackProblem {
+            k: 1,
+            mn: 2,
+            is_a: false,
+            r: 2,
+            k_range: 0..1,
+            mn_range: 0..1,
+            align_panel: 1,
+        }
+        .check();
     }
 
     #[test]
     fn range_b_4() {
-        PackProblem { k: 1, mn: 2, is_a: false, r: 6, k_range: 0..1, mn_range: 1..2 }.check();
+        PackProblem {
+            k: 1,
+            mn: 2,
+            is_a: false,
+            r: 6,
+            k_range: 0..1,
+            mn_range: 1..2,
+            align_panel: 1,
+        }
+        .check();
     }
 
     #[test]
     fn range_b_5() {
-        PackProblem { k: 1, mn: 7, is_a: false, r: 6, k_range: 0..1, mn_range: 1..7 }.check();
+        PackProblem {
+            k: 1,
+            mn: 7,
+            is_a: false,
+            r: 6,
+            k_range: 0..1,
+            mn_range: 1..7,
+            align_panel: 1,
+        }
+        .check();
+    }
+
+    #[test]
+    fn align_a_1() {
+        PackProblem {
+            k: 2,
+            mn: 2,
+            is_a: true,
+            r: 1,
+            k_range: 0..1,
+            mn_range: 0..2,
+            align_panel: 2,
+        }
+        .check();
+    }
+
+    #[test]
+    fn align_b_1() {
+        PackProblem {
+            k: 1,
+            mn: 1,
+            is_a: false,
+            r: 1,
+            k_range: 0..1,
+            mn_range: 0..1,
+            align_panel: 2,
+        }
+        .check();
+    }
+
+    #[test]
+    fn align_b_2() {
+        PackProblem {
+            k: 3,
+            mn: 1,
+            is_a: false,
+            r: 1,
+            k_range: 0..3,
+            mn_range: 0..1,
+            align_panel: 2,
+        }
+        .check();
+    }
+
+    #[test]
+    fn align_b_3() {
+        PackProblem {
+            k: 1,
+            mn: 1,
+            is_a: false,
+            r: 3,
+            k_range: 0..1,
+            mn_range: 0..1,
+            align_panel: 2,
+        }
+        .check();
+    }
+
+    #[test]
+    fn align_b_4() {
+        PackProblem {
+            k: 2,
+            mn: 1,
+            is_a: false,
+            r: 1,
+            k_range: 0..1,
+            mn_range: 0..1,
+            align_panel: 2,
+        }
+        .check();
+    }
+
+    #[test]
+    fn align_b_5() {
+        PackProblem {
+            k: 1,
+            mn: 5,
+            is_a: false,
+            r: 4,
+            k_range: 0..1,
+            mn_range: 0..5,
+            align_panel: 3,
+        }
+        .check();
     }
 }

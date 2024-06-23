@@ -1,4 +1,5 @@
 //! Extended dimension support
+use crate::internal::*;
 use num_traits::Zero;
 use std::fmt;
 use std::ops;
@@ -80,7 +81,11 @@ pub trait DimLike:
     /// Full evaluation of the symbol, failing if a symbol is missing
     fn eval_to_i64(&self, values: &SymbolValues) -> TractResult<i64>;
 
-    fn substitute(&self, from: &Symbol, to: &Self) -> Self;
+    fn substitute(&self, from: &Symbol, to: &Self) -> TractResult<Self>;
+
+    fn broadcast(self, other: Self) -> TractResult<Self>;
+
+    fn compatible_with(&self, other: &Self) -> bool;
 }
 
 impl DimLike for TDim {
@@ -88,7 +93,7 @@ impl DimLike for TDim {
         if self.is_zero() {
             return Ok((TDim::zero(), 1));
         } else if other.is_zero() {
-            anyhow::bail!("Division by zero")
+            bail!("Division by zero")
         }
         fn expand(dim: &TDim) -> (i64, Vec<TDim>) {
             match dim {
@@ -121,7 +126,7 @@ impl DimLike for TDim {
             if let Some(pos) = num.iter().position(|n| n == &it) {
                 num.remove(pos);
             } else {
-                anyhow::bail!("Can't divide {} by {}", self, other)
+                bail!("Can't divide {} by {}", self, other)
             }
         }
         use num_integer::Integer;
@@ -147,17 +152,25 @@ impl DimLike for TDim {
         self.eval(values)
     }
 
-    fn substitute(&self, from: &Symbol, to: &Self) -> Self {
+    fn substitute(&self, from: &Symbol, to: &Self) -> TractResult<Self> {
         self.substitute(from, to)
     }
 
     fn eval_to_i64(&self, values: &SymbolValues) -> TractResult<i64> {
         TDim::eval_to_i64(self, values)
     }
+
+    fn broadcast(self, other: Self) -> TractResult<Self> {
+        Ok(TDim::Broadcast(vec![self, other]).simplify())
+    }
+
+    fn compatible_with(&self, other: &Self) -> bool {
+        self.compatible_with(other)
+    }
 }
 
 impl<'a> std::convert::TryFrom<&'a TDim> for TDim {
-    type Error = anyhow::Error;
+    type Error = TractError;
     fn try_from(d: &'a TDim) -> TractResult<TDim> {
         Ok(d.clone())
     }
@@ -182,18 +195,32 @@ impl DimLike for usize {
         *self
     }
 
-    fn substitute(&self, _from: &Symbol, _to: &Self) -> Self {
-        *self
+    fn substitute(&self, _from: &Symbol, _to: &Self) -> TractResult<Self> {
+        Ok(*self)
     }
 
     fn eval_to_i64(&self, _: &SymbolValues) -> TractResult<i64> {
         Ok(*self as i64)
     }
+
+    fn broadcast(self, other: Self) -> TractResult<Self> {
+        if self == 1 || self == other {
+            Ok(other)
+        } else if other == 1 {
+            Ok(self)
+        } else {
+            bail!("Can not broadcast {self} against {other}")
+        }
+    }
+
+    fn compatible_with(&self, other: &Self) -> bool {
+        self == other
+    }
 }
 
 impl<'a> std::convert::TryFrom<&'a TDim> for usize {
-    type Error = anyhow::Error;
-    fn try_from(d: &'a TDim) -> anyhow::Result<usize> {
+    type Error = TractError;
+    fn try_from(d: &'a TDim) -> TractResult<usize> {
         d.to_usize()
     }
 }
@@ -255,6 +282,11 @@ mod tests {
     #[test]
     fn div_sym_sym_rem() {
         assert!((s() + 1).maybe_div(&(s() * 4)).is_err());
+    }
+
+    #[test]
+    fn div_sym_sym_simply_1() {
+        assert_eq!((s()).maybe_div(&(s())).unwrap(), (TDim::Val(1), 1));
     }
 
     #[test]

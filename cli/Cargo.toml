@@ -1,6 +1,6 @@
 [package]
 name = "tract"
-version = "0.21.4-pre"
+version = "0.21.6-pre"
 authors = [ "Romain Liautaud <romain.liautaud@snips.ai>", "Mathieu Poumeyrol <kali@zoy.org>"]
 license = "MIT OR Apache-2.0"
 description = "Tiny, no-nonsense, self contained, TensorFlow and ONNX inference"
@@ -22,10 +22,12 @@ criterion.workspace = true
 colorous.workspace = true
 env_logger.workspace = true
 flate2.workspace = true
+fs-err.workspace = true
 lazy_static.workspace = true
 log.workspace = true
 ndarray-npy.workspace = true
 nu-ansi-term.workspace = true
+num_cpus.workspace = true
 py_literal.workspace = true
 readings-probe.workspace = true
 regex.workspace = true
@@ -34,17 +36,17 @@ rustls.workspace = true
 scan_fmt.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tract-linalg = { version = "=0.21.4-pre", path = "../linalg" }
-tract-core = { version = "=0.21.4-pre", path = "../core" }
-tract-hir = { version = "=0.21.4-pre", path = "../hir" }
-tract-nnef = { version = "=0.21.4-pre", path = "../nnef" }
-tract-libcli = { version = "=0.21.4-pre", path = "../libcli" }
-tract-extra = { optional = true, version = "=0.21.4-pre", path = "../extra" }
-tract-pulse-opl = { optional = true, version = "=0.21.4-pre", path = "../pulse-opl" }
-tract-pulse = { optional = true, version = "=0.21.4-pre", path = "../pulse" }
-tract-onnx = { optional = true, version = "=0.21.4-pre", path = "../onnx" }
-tract-tensorflow = { optional = true, version = "=0.21.4-pre", path = "../tensorflow" }
-tract-tflite = { optional = true, version = "=0.21.4-pre", path = "../tflite" }
+tract-linalg = { version = "=0.21.6-pre", path = "../linalg" }
+tract-core = { version = "=0.21.6-pre", path = "../core" }
+tract-hir = { version = "=0.21.6-pre", path = "../hir" }
+tract-nnef = { version = "=0.21.6-pre", path = "../nnef" }
+tract-libcli = { version = "=0.21.6-pre", path = "../libcli" }
+tract-extra = { optional = true, version = "=0.21.6-pre", path = "../extra" }
+tract-pulse-opl = { optional = true, version = "=0.21.6-pre", path = "../pulse-opl" }
+tract-pulse = { optional = true, version = "=0.21.6-pre", path = "../pulse" }
+tract-onnx = { optional = true, version = "=0.21.6-pre", path = "../onnx" }
+tract-tensorflow = { optional = true, version = "=0.21.6-pre", path = "../tensorflow" }
+tract-tflite = { optional = true, version = "=0.21.6-pre", path = "../tflite" }
 
 [features]
 default = ["onnx", "tf", "pulse", "pulse-opl", "tflite", "extra"]

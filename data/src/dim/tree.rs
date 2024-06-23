@@ -1,5 +1,6 @@
-use super::resolve::solve_for;
-use super::sym::*;
+use crate::internal::*;
+
+use super::{sym::*, DimLike};
 use itertools::Itertools;
 use num_traits::{AsPrimitive, PrimInt, Zero};
 use std::cmp::Ordering;
@@ -28,6 +29,7 @@ pub enum TDim {
     Mul(Vec<TDim>),
     MulInt(i64, Box<TDim>),
     Div(Box<TDim>, u64),
+    Broadcast(Vec<TDim>),
 }
 
 use TDim::*;
@@ -36,11 +38,13 @@ fn tdim_compare(a: &TDim, b: &TDim) -> Ordering {
     match (a, b) {
         (Sym(a), Sym(b)) => a.cmp(b),
         (Val(a), Val(b)) => a.cmp(b),
-        (Add(a), Add(b)) | (Mul(a), Mul(b)) => a.len().cmp(&b.len()).then(
-            a.iter()
-                .zip(b.iter())
-                .fold(Ordering::Equal, |acc, (a, b)| acc.then_with(|| tdim_compare(a, b))),
-        ),
+        (Add(a), Add(b)) | (Mul(a), Mul(b)) | (Broadcast(a), Broadcast(b)) => {
+            a.len().cmp(&b.len()).then(
+                a.iter()
+                    .zip(b.iter())
+                    .fold(Ordering::Equal, |acc, (a, b)| acc.then_with(|| tdim_compare(a, b))),
+            )
+        }
         (MulInt(p, d), MulInt(q, e)) => p.cmp(q).then_with(|| tdim_compare(d, e)),
         (Div(d, p), Div(e, q)) => p.cmp(q).then_with(|| tdim_compare(d, e)),
         (Sym(_), _) => Ordering::Less,
@@ -53,6 +57,8 @@ fn tdim_compare(a: &TDim, b: &TDim) -> Ordering {
         (_, Mul(_)) => Ordering::Greater,
         (MulInt(_, _), _) => Ordering::Less,
         (_, MulInt(_, _)) => Ordering::Greater,
+        (Broadcast(_), _) => Ordering::Less,
+        (_, Broadcast(_)) => Ordering::Greater,
     }
 }
 
@@ -62,7 +68,8 @@ impl fmt::Display for TDim {
             Sym(sym) => write!(fmt, "{sym}"),
             Val(it) => write!(fmt, "{it}"),
             Add(it) => write!(fmt, "{}", it.iter().map(|x| format!("{x}")).join("+")),
-            Mul(it) => write!(fmt, "{}", it.iter().map(|x| format!("{x}")).join("*")),
+            Mul(it) => write!(fmt, "{}", it.iter().map(|x| format!("({x})")).join("*")),
+            Broadcast(it) => write!(fmt, "{}", it.iter().map(|x| format!("({x})")).join("#")),
             MulInt(a, b) => write!(fmt, "{a}*{b}"),
             Div(a, b) => write!(fmt, "({a})/{b}"),
         }
@@ -76,7 +83,7 @@ impl TDim {
     }
 
     #[inline]
-    pub fn to_i64(&self) -> anyhow::Result<i64> {
+    pub fn to_i64(&self) -> TractResult<i64> {
         if let Val(v) = self {
             Ok(*v)
         } else {
@@ -93,10 +100,10 @@ impl TDim {
         }
     }
 
-    pub fn eval_to_i64(&self, values: &SymbolValues) -> anyhow::Result<i64> {
+    pub fn eval_to_i64(&self, values: &SymbolValues) -> TractResult<i64> {
         match self {
             Sym(sym) => {
-                let Some(v) = values[sym] else { anyhow::bail!(UndeterminedSymbol(self.clone())) };
+                let Some(v) = values[sym] else { bail!(UndeterminedSymbol(self.clone())) };
                 Ok(v)
             }
             Val(v) => Ok(*v),
@@ -106,6 +113,10 @@ impl TDim {
             Mul(terms) => {
                 terms.iter().try_fold(1, |acc, it| it.eval_to_i64(values).map(|x| acc * x))
             }
+            Broadcast(terms) => terms.iter().try_fold(1i64, |acc, it| {
+                it.eval_to_i64(values)
+                    .and_then(|x| ((acc as usize).broadcast(x as usize)).map(|x| x as i64))
+            }),
             Div(a, q) => Ok(a.eval_to_i64(values)? / *q as i64),
             MulInt(p, a) => Ok(a.eval_to_i64(values)? * *p),
         }
@@ -117,29 +128,29 @@ impl TDim {
             Val(v) => Val(*v),
             Add(terms) => terms.iter().fold(Val(0), |acc, it| -> TDim { acc + it.eval(values) }),
             Mul(terms) => terms.iter().fold(Val(1), |acc, it| -> TDim { acc * it.eval(values) }),
+            Broadcast(terms) => terms.iter().fold(Val(1), |acc, it| -> TDim {
+                acc.broadcast(it.eval(values)).unwrap_or_else(|_| self.clone())
+            }),
             Div(a, q) => a.eval(values) / *q as i64,
             MulInt(p, a) => a.eval(values) * *p,
         }
     }
 
-    pub fn substitute(&self, from: &Symbol, to: &Self) -> Self {
+    pub fn substitute(&self, from: &Symbol, to: &Self) -> TractResult<Self> {
         match self {
-            Sym(sym) => {
-                if sym == from {
-                    to.clone()
-                } else {
-                    self.clone()
-                }
-            }
-            Val(v) => Val(*v),
-            Add(terms) => {
-                terms.iter().fold(Val(0), |acc, it| -> TDim { acc + it.substitute(from, to) })
-            }
-            Mul(terms) => {
-                terms.iter().fold(Val(1), |acc, it| -> TDim { acc * it.substitute(from, to) })
-            }
-            Div(a, q) => a.substitute(from, to) / *q as i64,
-            MulInt(p, a) => a.substitute(from, to) * *p,
+            Sym(sym) => Ok(if sym == from { to.clone() } else { self.clone() }),
+            Val(v) => Ok(Val(*v)),
+            Add(terms) => terms.iter().try_fold(Val(0), |acc, it| -> TractResult<TDim> {
+                Ok(acc + it.substitute(from, to)?)
+            }),
+            Mul(terms) => terms.iter().try_fold(Val(1), |acc, it| -> TractResult<TDim> {
+                Ok(acc * it.substitute(from, to)?)
+            }),
+            Broadcast(terms) => terms.iter().try_fold(Val(1), |acc, it| -> TractResult<TDim> {
+                acc.broadcast(it.substitute(from, to)?)
+            }),
+            Div(a, q) => Ok(a.substitute(from, to)? / *q as i64),
+            MulInt(p, a) => Ok(a.substitute(from, to)? * *p),
         }
     }
 
@@ -160,6 +171,7 @@ impl TDim {
             Sym(_) | Val(_) => 1,
             Add(terms) => 2 * terms.iter().map(TDim::cost).sum::<usize>(),
             Mul(terms) => 3 * terms.iter().map(TDim::cost).sum::<usize>(),
+            Broadcast(terms) => 4 * terms.iter().map(TDim::cost).sum::<usize>(),
             Div(a, _) => 3 * a.cost(),
             MulInt(_, a) => 2 * a.cost(),
         }
@@ -168,7 +180,7 @@ impl TDim {
     fn wiggle(&self) -> Vec<TDim> {
         use self::TDim::*;
         match self {
-            Sym(_) | Val(_) | Mul(_) => vec![self.clone()],
+            Sym(_) | Val(_) | Mul(_) | Broadcast(_) => vec![self.clone()],
             Add(terms) => {
                 let mut forms = vec![];
                 let sub_exprs = terms.iter().map(|e| e.wiggle()).multi_cartesian_product();
@@ -234,6 +246,7 @@ impl TDim {
         use num_integer::Integer;
         match self {
             Add(mut terms) => {
+                #[allow(clippy::mutable_key_type)]
                 let mut simplified_terms: HashMap<TDim, i64> = HashMap::new();
                 // factorize common sub-expr
                 while let Some(term) = terms.pop() {
@@ -274,23 +287,34 @@ impl TDim {
                 }
             }
             Mul(terms) => {
-                let (coef_prod, mut vars) =
-                    terms.into_iter().fold((1, vec![]), |acc, term| match term.simplify() {
-                        MulInt(coef, expr) => (
-                            acc.0 * coef,
-                            acc.1.into_iter().chain(Some(expr.as_ref().clone())).collect(),
-                        ),
-                        Val(v) => (acc.0 * v, acc.1),
-                        t => (acc.0, acc.1.into_iter().chain(Some(t)).collect()),
-                    });
-
-                match (coef_prod, vars.len()) {
-                    (_, 0) => Val(coef_prod), // Case #1: If 0 variables, return product
-                    (0, _) => Val(0),         // Case #2: Result is 0 if coef is 0
-                    (1, 1) => vars.remove(0), // Case #3: Product is 1, so return the only term
-                    (1, _) => Mul(vars), // Case #4: Product is 1, so return the non-integer terms
-                    (_, 1) => MulInt(coef_prod, Box::new(vars.remove(0))), // Case #5: Single variable, convert to 1 MulInt
-                    _ => MulInt(coef_prod, Box::new(Mul(vars))), // Case #6: Multiple variables, convert to MulInt
+                let mut gcd = Mul(terms.clone()).gcd() as i64;
+                if gcd == 0 {
+                    return Val(0);
+                }
+                let mut terms = if gcd != 1 {
+                    terms
+                        .into_iter()
+                        .map(|t| {
+                            let gcd = t.gcd();
+                            (t / gcd).simplify()
+                        })
+                        .collect()
+                } else {
+                    terms
+                };
+                if terms.iter().filter(|t| t == &&Val(-1)).count() % 2 == 1 {
+                    gcd = -gcd;
+                }
+                terms.retain(|t| !t.is_one() && t != &Val(-1));
+                terms.sort_by(tdim_compare);
+                match (gcd, terms.len()) {
+                    (_, 0) => Val(gcd), // Case #1: If 0 variables, return product
+                    (0, _) => Val(0),   // Case #2: Result is 0 if coef is 0 (actually
+                    // unreachable as we check at the beginning)
+                    (1, 1) => terms.remove(0), // Case #3: Product is 1, so return the only term
+                    (1, _) => Mul(terms), // Case #4: Product is 1, so return the non-integer terms
+                    (_, 1) => MulInt(gcd, Box::new(terms.remove(0))), // Case #5: Single variable, convert to 1 MulInt
+                    _ => MulInt(gcd, Box::new(Mul(terms))), // Case #6: Multiple variables, convert to MulInt
                 }
             }
             MulInt(coef, expr) => {
@@ -378,7 +402,24 @@ impl TDim {
                     Div(b!(a), q)
                 }
             }
-            _ => self,
+            Broadcast(terms) => {
+                let mut terms: Vec<TDim> = terms
+                    .iter()
+                    .map(|s| s.clone().simplify())
+                    .flat_map(|t| if let Broadcast(t) = t { t } else { vec![t] })
+                    .filter(|t| !t.is_one())
+                    .sorted_by(tdim_compare)
+                    .dedup()
+                    .collect_vec();
+                if terms.len() == 0 {
+                    Val(1)
+                } else if terms.len() == 1 {
+                    terms.remove(0)
+                } else {
+                    Broadcast(terms)
+                }
+            }
+            Val(_) | Sym(_) => self,
         }
     }
 
@@ -393,7 +434,7 @@ impl TDim {
                 tail.iter().fold(head.gcd(), |a, b| a.gcd(&b.gcd()))
             }
             MulInt(p, a) => a.gcd() * p.unsigned_abs(),
-            Mul(_) => 1,
+            Mul(terms) => terms.iter().map(|t| t.gcd()).product(),
             Div(a, q) => {
                 if a.gcd() % *q == 0 {
                     a.gcd() / *q
@@ -401,6 +442,7 @@ impl TDim {
                     1
                 }
             }
+            Broadcast(terms) => terms.iter().map(|t| t.gcd()).reduce(|a, b| a.gcd(&b)).unwrap_or(1),
         }
     }
 
@@ -414,6 +456,7 @@ impl TDim {
             Val(v) => Val(v / d as i64),
             Sym(_) => panic!(),
             Add(terms) => Add(terms.iter().map(|t| t.div(d)).collect()),
+            Broadcast(terms) => Broadcast(terms.iter().map(|t| t.div(d)).collect()),
             Mul(_) => Div(Box::new(self.clone()), d),
             MulInt(p, a) => {
                 if *p == d as i64 {
@@ -452,36 +495,34 @@ impl TDim {
                     let (n, d) = slope_rec(a, sym);
                     (n, d * *q as i64)
                 }
+                Broadcast(terms) => slope_rec(&terms[0], sym),
             }
         }
         let (p, q) = slope_rec(self, sym);
         reduce_ratio(p, q)
     }
 
+    #[allow(clippy::mutable_key_type)]
     pub fn symbols(&self) -> std::collections::HashSet<Symbol> {
         match self {
             Val(_) => maplit::hashset!(),
             Sym(s) => maplit::hashset!(s.clone()),
-            Add(terms) | Mul(terms) => terms.iter().fold(maplit::hashset!(), |mut set, v| {
-                set.extend(v.symbols());
-                set
-            }),
+            Add(terms) | Mul(terms) | Broadcast(terms) => {
+                terms.iter().fold(maplit::hashset!(), |mut set, v| {
+                    set.extend(v.symbols());
+                    set
+                })
+            }
             MulInt(_, a) => a.symbols(),
             Div(a, _) => a.symbols(),
         }
     }
 
-    /// true is both are equal of if there is one single symbol involved and there is a solution
-    /// to make them equal
     pub fn compatible_with(&self, other: &TDim) -> bool {
-        if self == other {
-            return true;
+        if let Ok(x) = (self.clone() - other).to_i64() {
+            return x == 0;
         }
-        let symbols: Vec<Symbol> = self.symbols().union(&other.symbols()).cloned().collect();
-        if symbols.len() != 1 {
-            return false;
-        }
-        solve_for(&symbols[0], self, other).is_some()
+        true // maybe ? :)
     }
 }
 
@@ -516,11 +557,11 @@ impl Default for TDim {
 
 impl num_traits::Bounded for TDim {
     fn min_value() -> Self {
-        TDim::Val(i64::min_value())
+        TDim::Val(i64::MIN)
     }
 
     fn max_value() -> Self {
-        TDim::Val(i64::max_value())
+        TDim::Val(i64::MAX)
     }
 }
 
@@ -937,5 +978,21 @@ mod tests {
     fn conv2d_ex_2() {
         let e = (s() - 3 + 1).div_ceil(1);
         assert_eq!(e, s() + -2);
+    }
+
+    #[test]
+    fn extract_int_gcd_from_muls() {
+        let term = (s() + 1) / 4;
+        let mul = (term.clone() * 24 - 24) * (term.clone() * 2 - 2);
+        let target = (term.clone() - 1) * (term.clone() - 1) * 48;
+        assert_eq!(mul, target);
+    }
+
+    #[test]
+    fn equality_of_muls() {
+        let term = (s() + 1) / 4;
+        let mul1 = (term.clone() * 2 - 3) * (term.clone() - 1);
+        let mul2 = (term.clone() - 1) * (term.clone() * 2 - 3);
+        assert_eq!(mul1, mul2);
     }
 }

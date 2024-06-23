@@ -1,62 +1,44 @@
 #!/bin/sh
 
+WHITE='\033[1;37m'
+NC='\033[0m' # No Color
+
 if [ -e /proc/cpuinfo ]
 then
     grep "^flags" /proc/cpuinfo | head -1 | \
         grep --color=always '\(s\?sse[0-9_]*\|fma\|f16c\|avx[^ ]*\)'
 fi
 
-set -ex
+set -x
 
-which rustup || curl https://sh.rustup.rs -sSf | sh -s -- -y
-rustup update
+. $(dirname $0)/ci-system-setup.sh
 
-PATH=$PATH:$HOME/.cargo/bin
-
-if [ ${RUST_VERSION:=stable} != "stable" ]
-then
-    rustup toolchain add $RUST_VERSION
-fi
-export RUSTUP_TOOLCHAIN=$RUST_VERSION
-
-rustc --version
-
-if [ `uname` = "Darwin" ]
-then
-    sysctl -n machdep.cpu.brand_string
-    brew install coreutils
-    pip3 install numpy
-else
-    sudo apt-get install -y llvm python3 python3-numpy
-fi
-
-if [ -z "$CACHEDIR" ]
-then
-    CACHEDIR=$(realpath `dirname $0`/../.cached)
-fi
-
-export CACHEDIR
-
-# useful as debug_asserts will come into play
-cargo -q test -q -p tract-core --features paranoid_assertions $CARGO_EXTRA
-cargo -q test -q -p test-onnx-core $CARGO_EXTRA
-cargo -q test -q -p test-nnef-cycle $CARGO_EXTRA
-cargo -q test -q -p test-blas $CARGO_EXTRA
-
-cargo check -p tract-nnef --features complex $CARGO_EXTRA
-cargo check -p tract --no-default-features $CARGO_EXTRA
+set -e
 
 if [ `arch` = "x86_64" -a "$RUST_VERSION" = "stable" ]
 then
     ALL_FEATURES=--all-features
 fi
 
-cargo clean
+set +x
 
 for c in data linalg core nnef hir onnx pulse onnx-opl pulse-opl rs proxy
 do
-    df -h
+    echo
+    echo "$WHITE ### $c ### $NC"
+    echo
     cargo -q test $CARGO_EXTRA -q -p tract-$c
+done
+
+for c in test-rt/test*
+do
+    if [ "$c" != "test-rt/test-tflite" ]
+    then
+        echo
+        echo "$WHITE ### $c ### $NC"
+        echo
+        (cd $c; cargo test -q $CARGO_EXTRA)
+    fi
 done
 
 # doc test are not finding libtensorflow.so

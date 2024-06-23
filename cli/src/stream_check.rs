@@ -34,7 +34,7 @@ pub fn handle(params: &Parameters, options: &DisplayParams) -> TractResult<()> {
     let mut annotations = Annotations::from_model(&*params.tract_model)?;
     annotate_with_graph_def(&mut annotations, &*params.tract_model, &params.graph)?;
 
-    let eval_order = ::tract_core::model::eval_order(decl)?;
+    let eval_order = tract_core::model::order::eval_order_opt_ram(decl)?;
 
     for &decl_node in eval_order.iter() {
         let pulsed_node = match pulsed.node_by_name(&*decl.node(decl_node).name) {
@@ -82,7 +82,7 @@ pub fn handle(params: &Parameters, options: &DisplayParams) -> TractResult<()> {
                     .iter()
                     .map(|d| d.to_usize())
                     .collect::<TractResult<TVec<_>>>()?;
-                let mut pulsed_input = ArrayD::from_elem(&*input_shape, std::f32::NAN);
+                let mut pulsed_input = ArrayD::from_elem(&*input_shape, f32::NAN);
                 let offset = i * input_pulse;
                 if offset < stream_dim {
                     let count = input_pulse.min(stream_dim - offset);
