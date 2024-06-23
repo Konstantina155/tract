@@ -1,8 +1,9 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
+#include <stddef.h>
 #include <sys/time.h>  // for gettimeofday()
-#include "tract.h"
+#include <tract.h>
 
 #define check(call) {                                                           \
     TRACT_RESULT result = call;                                                 \
@@ -22,8 +23,17 @@ prediction **
 init_predictions(int arg)
 {
     prediction **inf = malloc(arg * sizeof(prediction));
+    if (!inf) {
+        fprintf(stderr, "Error allocating memory for predictions\n");
+        return NULL;
+    }
+
     for (int i = 0; i < arg; i++) {
         inf[i] = malloc(sizeof(prediction));
+        if (!inf[i]) {
+            fprintf(stderr, "Error allocating memory for prediction\n");
+            return NULL;
+        }
         inf[i]->pred = 0.0;
         inf[i]->category = 0;
         inf[i]->output = NULL;
@@ -42,6 +52,14 @@ free_predictions(prediction **inf, int arg)
     free(inf);
 }
 
+typedef struct EncryptionParameters
+{
+    unsigned char *key;
+    unsigned char *iv;
+    unsigned char *tag;
+    unsigned char *aad;
+} EncryptionParameters;
+
 prediction *
 inference(char *model_name, TractValue *input, TractValue *input2, prediction *inf)
 {
@@ -56,9 +74,7 @@ inference(char *model_name, TractValue *input, TractValue *input2, prediction *i
     // Load the model
     TractModel *model = NULL;
     TractInferenceModel *inference_model = NULL;
-    fprintf(stderr, "Before tract_onnx_model_for_path\n");
-    check(tract_onnx_model_for_path(onnx, model_name, &inference_model));
-    fprintf(stderr, "After tract_onnx_model_for_path\n");
+    check(tract_onnx_model_for_path(onnx, model_name, &inference_model, ));
     assert(inference_model);
     assert(onnx);
 
@@ -66,12 +82,6 @@ inference(char *model_name, TractValue *input, TractValue *input2, prediction *i
     assert(!onnx);
 
     // Convert inference model to a typed model and optimize it
-    // check(tract_inference_model_into_typed(&inference_model, &model));
-    // assert(model);
-    // check(tract_model_optimize(model));
-    // assert(model);
-
-    // or
     check(tract_inference_model_into_optimized(&inference_model,&model));
     assert(model);
 
@@ -105,21 +115,9 @@ inference(char *model_name, TractValue *input, TractValue *input2, prediction *i
         }
     }
     assert(data[argmax] == max);
-    printf("\nModel: %s\nMax is %f for category %d\n", model_name, max, argmax);
+    fprintf(stderr, "\nModel: %s\nMax is %f for category %d\n", model_name, max, argmax);
 
-    // or spawn a state to run the model
-    // TractState *state = NULL;
-    // check(tract_runnable_spawn_state(runnable, &state));
-    // assert(state);
-
-    // check(tract_state_run(state, &input, &output));
-
-    // check(tract_value_as_bytes(output, NULL, NULL, NULL, (const void**) &data));
-    // check(tract_state_destroy(&state));
-    // assert(!state);
-
-    // printf("\nModel: %s\nMax is %f for category %d\n", model_name, max, argmax);
-
+    
     gettimeofday(&t2, NULL);
     elapsedTime = (t2.tv_sec - t1.tv_sec) * 1000.0;      // sec to ms
     elapsedTime += (t2.tv_usec - t1.tv_usec) / 1000.0;   // us to ms
@@ -132,50 +130,72 @@ inference(char *model_name, TractValue *input, TractValue *input2, prediction *i
     return inf;
 }
 
+size_t *
+decode_pb(FILE *fd)
+{
+    uint8_t byte;
+    uint8_t wire_type;
+    uint64_t varint_value;
+    static size_t shape[4] = {0, 0, 0, 0};
+
+    int k=0;
+    for (int k = 0; k < 4; k++) {
+        fread(&byte, sizeof(uint8_t), 1, fd);
+        wire_type = byte & 0x07;
+
+        if (wire_type == 0) {
+            varint_value = 0;
+            int shift = 0;
+            do {
+                fread(&byte, sizeof(uint8_t), 1, fd);
+                varint_value |= (uint64_t)(byte & 0x7F) << (7 * shift);
+                shift++;
+            } while (byte & 0x80);
+            shape[k] = varint_value;
+        } else {
+            break;
+        }
+    }
+
+    fseek(fd, 0, SEEK_SET);
+
+    return shape;
+}
 
 int
 main(int argc, char **argv)
 {
-    char command[256];
-    snprintf(command, sizeof (command), "python3 get_size_io.py %s", argv[1]);
-
-    FILE *cmd = popen(command, "r");
-    char result[100];
-    while (fgets(result, sizeof(result), cmd) !=NULL) {}
-    pclose(cmd);
-
-    size_t shape[4];
-    char *token;
-
-    // Skip "name of first node: " prefix
-    token = strtok(result, ":");
-    token = strtok(NULL, ":");
-    token = strtok(token, " ");
-    size_t i = 0;
-    while (token) {
-        char *endptr;
-        long number = strtol(token, &endptr, 10);
-        shape[i++] = number;
-        if (number == 0) {
-            break;
-        }
-
-        token = strtok(NULL, " ");
+    if (argc < 3) {
+        fprintf(stderr, "Usage: %s <model1.onnx> <model2.onnx> ... <modelN.onnx> <input.pb>\n", argv[0]);
+        return 1;
     }
-    fprintf(stderr, "\nShape: %zu, %zu, %zu, %zu\n", shape[0], shape[1], shape[2], shape[3]);
 
-    int calculated_shape = shape[0] * shape[1] * shape[2] * shape[3];
-    float *image = malloc(calculated_shape*sizeof(float));
     FILE *fd = fopen(argv[argc - 1], "rb");
-    assert(fread(image, sizeof(float), calculated_shape, fd) == calculated_shape);
+    if (!fd) {
+        fprintf(stderr, "Error opening model_input file");
+        return 1;
+    }
+    
+    size_t *shape = decode_pb(fd);
+    int calculated_shape = shape[0] * shape[1] * shape[2] * shape[3];
+    fprintf(stderr, "Input shape: %zu %zu %zu %zu\n", shape[0], shape[1], shape[2], shape[3]);
+
+    float *image = (float *) malloc( calculated_shape * sizeof(float));
+    int image_floats = fread(image, sizeof(float), calculated_shape, fd);
+    fprintf(stderr, "Read %d floats\n", image_floats);
+    assert(image_floats == calculated_shape);
     fclose(fd);
 
     prediction** preds = init_predictions(argc-1);
+    if (!preds) {
+        return 1;
+    }
 
     check(tract_value_from_bytes(TRACT_DATUM_TYPE_F32, 4, shape, image, &preds[0]->output));
     free(image);
 
-    //If model is cut inside a circle, the inference of the last model is gonna take the output of the 2 previous models, like input2, input3
+    //Hint for splitting the models into a node that is part of cut from parent node (circle)
+    //The inference of the last model is gonna take the output of the 2 previous models, like input2, input3
     for (int i = 1; i < argc-1; i++) {
         preds[i] = inference(argv[i], preds[i-1]->output, NULL, preds[i]);
     }

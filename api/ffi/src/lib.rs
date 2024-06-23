@@ -271,16 +271,26 @@ pub unsafe extern "C" fn tract_onnx_model_for_path(
     onnx: *const TractOnnx,
     path: *const c_char,
     model: *mut *mut TractInferenceModel,
+    params: *const tract_core::framework::EncryptionParameters
 ) -> TRACT_RESULT {
     wrap(|| unsafe {
-        check_not_null!(onnx, path, model);
+        check_not_null!(onnx, path, model, params);
+
+        let params = &*params;
+        check_not_null!(params.key, params.iv, params.aad, params.tag);
         println!("Inside the onnx_model_for_path function!");
         println!("Model path: {:?}", path);
         println!("Onnx: {:?}", onnx);
-        println!("Model: {:?}\n", model);
+        println!("Model: {:?}", model);
+        println!("Key: {:?}", params.key);
+        println!("IV: {:?}", params.iv);
+        println!("AAd: {:?}", params.aad);
+        println!("Tag: {:?}\n", params.tag);
+
         *model = std::ptr::null_mut();
         let path = CStr::from_ptr(path).to_str()?;
-        let m = Box::new(TractInferenceModel((*onnx).0.model_for_path(path)?));
+
+        let m = Box::new(TractInferenceModel((*onnx).0.model_for_path(path, Some(params))?));
         println!("After inizialing the TractInferenceModel inside the model_for_path function!\n");
         *model = Box::into_raw(m);
         println!("End of onnx_model_for_path function!\n");

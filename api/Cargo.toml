@@ -13,6 +13,7 @@ rust-version = "1.75"
 include = [ "Cargo.toml", "src/**/*.rs", "LICENSE*", "tract.h" ]
 
 [dependencies]
+tract-core = { path = "../core/" , version = "=0.21.6-pre" }
 anyhow.workspace = true
 boow.workspace = true
 flate2.workspace = true
