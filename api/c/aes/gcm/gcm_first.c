@@ -116,12 +116,6 @@ int main(int argc, char* argv[])
         fprintf(stderr, "mbedtls_ctr_drbg_random failed to extract add_data - returned -0x%04x\n", -ret);
         goto exit;
     }
-    
-    mbedtls_printf("plaintext in hex: ");
-    for (int i = 0; i < plain_len; i++) {
-        mbedtls_printf("%02x", model[i]);
-    }
-    mbedtls_printf("\n");
 
     // Initialize the GCM context with our key and desired cipher
     ret = mbedtls_gcm_setkey(&gcm,                      // GCM context to be initialized
@@ -149,12 +143,6 @@ int main(int argc, char* argv[])
         fprintf(stderr, "mbedtls_gcm_crypt_and_tag failed to encrypt the data - returned -0x%04x\n", -ret);
         goto exit;
     }
-
-    mbedtls_printf("ciphertext in hex: ");
-    for (int i = 0; i < plain_len; i++) {
-        mbedtls_printf("%02x", output[i]);
-    }
-    mbedtls_printf("\n");
 
     mbedtls_gcm_free(&gcm);
 
@@ -191,12 +179,6 @@ int main(int argc, char* argv[])
         fprintf(stderr, "mbedtls_gcm_auth_decrypt failed to decrypt the ciphertext - tag doesn't match\n");
         goto exit;
     }
-
-    mbedtls_printf("plaintext in hex: ");
-    for (int i = 0; i < plain_len; i++) {
-        mbedtls_printf("%02x", decrypted[i]);
-    }
-    mbedtls_printf("\n");
     
     if (memcmp(decrypted, model, plain_len) != 0) {
         ret = 1;

@@ -136,18 +136,6 @@ main(int argc, char* argv[])
         goto exit;
     }
 
-    // mbedtls_printf("aad: ");
-    // for (int i = 0; i < ADD_DATA_BYTES; i++) {
-    //     mbedtls_printf("%02x", add_data[i]);
-    // }
-    // mbedtls_printf("\n");
-
-    // mbedtls_printf("plaintext in hex: ");
-    // for (int i = 0; i < plain_len; i++) {
-    //     mbedtls_printf("%02x", model[i]);
-    // }
-    // mbedtls_printf("\n");
-
     // Initialize the GCM context with our key and desired cipher
     ret = mbedtls_gcm_setkey(&gcm,                      // GCM context to be initialized
                              MBEDTLS_CIPHER_ID_AES,     // cipher to use (a 128-bit block cipher)
@@ -240,12 +228,6 @@ main(int argc, char* argv[])
         fprintf(stderr, "mbedtls_gcm_finish failed to finish the encryption process and generate the tag - returned -0x%04x\n", -ret);
         goto exit;
     }
-
-    // mbedtls_printf("ciphertxt in hex: ");
-    // for (int i = 0; i < plain_len; i++) {
-    //     mbedtls_printf("%02x", output[i]);
-    // }
-    // mbedtls_printf("\n");
 
     save_to_files("ciphertext.bin", output, plain_len);
     save_to_files("key.bin", key, KEY_BYTES);
