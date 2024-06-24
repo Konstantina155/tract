@@ -2,3 +2,9 @@ tract.h
 *.so
 mobilenet
 message.txt
+message2.txt
+aes/*.bin
+aes/cbc_final
+aes/gcm_final
+aes/gcm_first
+aes/gcm_encr

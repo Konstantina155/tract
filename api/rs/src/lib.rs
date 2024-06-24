@@ -84,17 +84,41 @@ impl NnefInterface for Nnef {
     }
 }
 
+use std::slice;
 pub struct Onnx(tract_onnx::Onnx);
 impl OnnxInterface for Onnx {
     type InferenceModel = InferenceModel;
     fn model_for_path(&self, path: impl AsRef<Path>, params: Option<*const tract_core::framework::EncryptionParameters>) -> Result<Self::InferenceModel> {
         let params = match params {
             Some(params) => unsafe { &*params },
-            None => tract_nnef::internal::bail!("Encryption parameters are null!")
+            None => anyhow::bail!("Encryption params is null!")
         };
+        if params.key.is_null() || params.iv.is_null() || params.aad.is_null() || params.tag.is_null() {
+            anyhow::bail!("Encryption parameters are null!");
+        }
         
         println!("Inside the model_for_path function in the OnnxInterface!");
         println!("Path: {:?}\n", path.as_ref());
+
+        // Print the params in hex
+        fn print_hex(label: &str, data: *const u8, len: usize) {
+            if !data.is_null() {
+                let slice = unsafe { slice::from_raw_parts(data, len) };
+                print!("{}: ", label);
+                for byte in slice {
+                    print!("{:02x}", byte);
+                }
+                println!();
+            } else {
+                println!("{}: null", label);
+            }
+        }
+
+        print_hex("Key", params.key, 32);
+        print_hex("IV", params.iv, 12);
+        print_hex("AAD", params.aad, 64);
+        print_hex("Tag", params.tag, 16);
+
         Ok(InferenceModel(self.0.model_for_path(path, Some(params))?))
     }
 }

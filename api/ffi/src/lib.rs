@@ -266,6 +266,7 @@ pub unsafe extern "C" fn tract_onnx_destroy(onnx: *mut *mut TractOnnx) -> TRACT_
 /// Parse and load an ONNX model as a tract InferenceModel.
 /// println!("cargo:rerun-if-changed=tract.h");
 /// `path` is a null-terminated utf-8 string pointer. It must point to a `.onnx` model file.
+use std::slice;
 #[no_mangle]
 pub unsafe extern "C" fn tract_onnx_model_for_path(
     onnx: *const TractOnnx,
@@ -278,17 +279,31 @@ pub unsafe extern "C" fn tract_onnx_model_for_path(
 
         let params = &*params;
         check_not_null!(params.key, params.iv, params.aad, params.tag);
-        println!("Inside the onnx_model_for_path function!");
-        println!("Model path: {:?}", path);
-        println!("Onnx: {:?}", onnx);
-        println!("Model: {:?}", model);
-        println!("Key: {:?}", params.key);
-        println!("IV: {:?}", params.iv);
-        println!("AAd: {:?}", params.aad);
-        println!("Tag: {:?}\n", params.tag);
 
         *model = std::ptr::null_mut();
         let path = CStr::from_ptr(path).to_str()?;
+
+        println!("Inside the onnx_model_for_path function!");
+        println!("Model path: {:?}", path);
+        // Print the params in hex
+        fn print_hex(label: &str, data: *const u8, len: usize) {
+            if !data.is_null() {
+                let slice = unsafe { slice::from_raw_parts(data, len) };
+                print!("{}: ", label);
+                for byte in slice {
+                    print!("{:02x}", byte);
+                }
+                println!();
+            } else {
+                println!("{}: null", label);
+            }
+        }
+
+        print_hex("Key", params.key, 32);
+        print_hex("IV", params.iv, 12);
+        print_hex("AAD", params.aad, 64);
+        print_hex("Tag", params.tag, 16);
+        
 
         let m = Box::new(TractInferenceModel((*onnx).0.model_for_path(path, Some(params))?));
         println!("After inizialing the TractInferenceModel inside the model_for_path function!\n");

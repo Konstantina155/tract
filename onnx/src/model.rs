@@ -310,7 +310,7 @@ pub fn decrypt(key: &[u8], iv: &[u8], cipher_text: &mut [u8], additional_data: &
 }
 
 impl Framework<pb::ModelProto, InferenceModel> for Onnx {
-    fn model_for_path(&self, p: impl AsRef<path::Path>, _params: Option<*const tract_core::framework::EncryptionParameters>) -> TractResult<InferenceModel> {
+    fn model_for_path(&self, p: impl AsRef<path::Path>, params: Option<*const tract_core::framework::EncryptionParameters>) -> TractResult<InferenceModel> {
         let mut path = PathBuf::new();
         println!("Inside the model_for_path function in ParseResult!");
         println!("Path: {:?}", p.as_ref());
@@ -320,7 +320,16 @@ impl Framework<pb::ModelProto, InferenceModel> for Onnx {
             dir = dir_opt.to_str();
         }
         println!("Dir: {:?}", dir);
-        let proto = self.proto_model_for_path(p, None)?;
+
+        let params = match params {
+            Some(params) => unsafe { &*params },
+            None => tract_nnef::internal::bail!("Encryption params is null!")
+        };
+        if params.key.is_null() || params.iv.is_null() || params.aad.is_null() || params.tag.is_null() {
+            bail!("Encryption parameters are null!");
+        }
+
+        let proto = self.proto_model_for_path(p, Some(params))?;
         // The graph is created in below function
         let ParseResult { model, unresolved_inputs, .. } = self.parse(&proto, dir)?;
         if unresolved_inputs.len() > 0 {
@@ -339,21 +348,40 @@ impl Framework<pb::ModelProto, InferenceModel> for Onnx {
 
     #[cfg(not(target_family = "wasm"))]
     fn proto_model_for_path(&self, p: impl AsRef<path::Path>, params: Option<*const tract_core::framework::EncryptionParameters>) -> TractResult<pb::ModelProto> {
+        println!("Inside the proto_model_for_path function in wasm!\n");
         let params = match params {
             Some(params) => unsafe { &*params },
-            None => bail!("Encryption parameters are null!")
+            None => tract_nnef::internal::bail!("Encryption params is null!")
         };
-
         if params.key.is_null() || params.iv.is_null() || params.aad.is_null() || params.tag.is_null() {
             bail!("Encryption parameters are null!");
         }
-        println!("Inside the proto_model_for_path function in wasm!\n");
+
+        // Print the params in hex
+        fn print_hex(label: &str, data: *const u8, len: usize) {
+            if !data.is_null() {
+                let slice = unsafe { slice::from_raw_parts(data, len) };
+                print!("{}: ", label);
+                for byte in slice {
+                    print!("{:02x}", byte);
+                }
+                println!();
+            } else {
+                println!("{}: null", label);
+            }
+        }
+
+        print_hex("Key", params.key, 32);
+        print_hex("IV", params.iv, 12);
+        print_hex("AAD", params.aad, 64);
+        print_hex("Tag", params.tag, 16);
 
         let key = unsafe { slice::from_raw_parts(params.key, 32) };
         let iv = unsafe { slice::from_raw_parts(params.iv, 12) };
-        let aad = unsafe { slice::from_raw_parts(params.aad, 16) };
+        let aad = unsafe { slice::from_raw_parts(params.aad, 64) };
         let tag = unsafe { slice::from_raw_parts(params.tag, 16) };
         let p = p.as_ref();
+
         let map = unsafe {
             memmap2::Mmap::map(&fs::File::open(p).with_context(|| format!("Opening {p:?}"))?)?
         };
