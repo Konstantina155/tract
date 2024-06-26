@@ -235,8 +235,6 @@ impl Default for Onnx {
 
 impl Onnx {
     pub fn parse(&self, proto: &pb::ModelProto, path: Option<&str>) -> TractResult<ParseResult> {
-        println!("Parse the proto file!");
-        println!("Create the graph!\n");
         self.parse_with_symbols(proto, path, &SymbolTable::default())
     }
     pub fn parse_with_symbols(
@@ -311,15 +309,13 @@ pub fn decrypt(key: &[u8], iv: &[u8], cipher_text: &mut [u8], additional_data: &
 
 impl Framework<pb::ModelProto, InferenceModel> for Onnx {
     fn model_for_path(&self, p: impl AsRef<path::Path>, params: Option<*const tract_core::framework::EncryptionParameters>) -> TractResult<InferenceModel> {
+        //Inside the model_for_path function in wasm
         let mut path = PathBuf::new();
-        println!("Inside the model_for_path function in ParseResult!");
-        println!("Path: {:?}", p.as_ref());
         path.push(&p);
         let mut dir: Option<&str> = None;
         if let Some(dir_opt) = path.parent() {
             dir = dir_opt.to_str();
         }
-        println!("Dir: {:?}", dir);
 
         let params = match params {
             Some(params) => unsafe { &*params },
@@ -335,7 +331,6 @@ impl Framework<pb::ModelProto, InferenceModel> for Onnx {
         if unresolved_inputs.len() > 0 {
             bail!("Could not resolve inputs at top-level: {:?}", unresolved_inputs)
         }
-        println!("Before returning to OnnxInterface!\n");
         Ok(model)
     }
 
@@ -348,7 +343,7 @@ impl Framework<pb::ModelProto, InferenceModel> for Onnx {
 
     #[cfg(not(target_family = "wasm"))]
     fn proto_model_for_path(&self, p: impl AsRef<path::Path>, params: Option<*const tract_core::framework::EncryptionParameters>) -> TractResult<pb::ModelProto> {
-        println!("Inside the proto_model_for_path function in wasm!\n");
+        //Inside the proto_model_for_path function in wasm
         let params = match params {
             Some(params) => unsafe { &*params },
             None => tract_nnef::internal::bail!("Encryption params is null!")
@@ -357,29 +352,13 @@ impl Framework<pb::ModelProto, InferenceModel> for Onnx {
             bail!("Encryption parameters are null!");
         }
 
-        // Print the params in hex
-        fn print_hex(label: &str, data: *const u8, len: usize) {
-            if !data.is_null() {
-                let slice = unsafe { slice::from_raw_parts(data, len) };
-                print!("{}: ", label);
-                for byte in slice {
-                    print!("{:02x}", byte);
-                }
-                println!();
-            } else {
-                println!("{}: null", label);
-            }
-        }
-
-        print_hex("Key", params.key, 32);
-        print_hex("IV", params.iv, 12);
-        print_hex("AAD", params.aad, 64);
-        print_hex("Tag", params.tag, 16);
-
         let key = unsafe { slice::from_raw_parts(params.key, 32) };
         let iv = unsafe { slice::from_raw_parts(params.iv, 12) };
         let aad = unsafe { slice::from_raw_parts(params.aad, 64) };
-        let tag = unsafe { slice::from_raw_parts(params.tag, 16) };
+        let tag_slice = unsafe { slice::from_raw_parts(params.tag, 32) };
+        let tag_bytes_vec = hex::decode(tag_slice).expect("Error decoding tag!");
+        let tag_bytes = GenericArray::clone_from_slice(&tag_bytes_vec[..16]);
+        
         let p = p.as_ref();
 
         let map = unsafe {
@@ -388,7 +367,7 @@ impl Framework<pb::ModelProto, InferenceModel> for Onnx {
 
         let mut model_data = map.to_vec();
         
-        match decrypt(key, iv, &mut model_data, aad, &GenericArray::clone_from_slice(tag)) {
+        match decrypt(key, iv, &mut model_data, aad, &tag_bytes) {
             Ok(_) => {
                 match crate::pb::ModelProto::decode(&*model_data) {
                     Ok(model_proto) => {

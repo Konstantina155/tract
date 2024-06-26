@@ -19,6 +19,7 @@ maintenance = { status = "actively-developed" }
 
 [dependencies]
 aes-gcm = "0.9"
+hex = "0.4"
 generic-array = "0.14.6"
 bytes.workspace = true
 derive-new.workspace = true
