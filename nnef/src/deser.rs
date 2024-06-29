@@ -183,8 +183,21 @@ impl<'mb> ModelBuilder<'mb> {
                     if qparam != self.model.outlet_fact(*value)?.datum_type {
                         self.model.node_mut(value.node).name =
                             format!("{}_raw", self.naming_scopes.iter().map(|i| &i.0).join("_"));
+                        if self.model.outlet_fact(*value)?.datum_type == TDim::datum_type() {
+                            *value = self.model.wire_node(
+                                format!(
+                                    "{}_cast_to_f32",
+                                    self.naming_scopes.iter().map(|i| &i.0).join("_")
+                                ),
+                                tract_core::ops::cast::cast(f32::datum_type()),
+                                &[*value],
+                            )?[0];
+                        }
                         *value = self.model.wire_node(
-                            "foo",
+                            format!(
+                                "{}_cast_to_q",
+                                self.naming_scopes.iter().map(|i| &i.0).join("_")
+                            ),
                             tract_core::ops::cast::cast(qparam),
                             &[*value],
                         )?[0];
@@ -654,9 +667,15 @@ impl CoerceFrom<Value> for OutletId {
                 [0]),
             Value::Wire(outlet) => Ok(*outlet),
             Value::Tuple(tuple) if tuple.len() == 1 => OutletId::coerce(builder, &tuple[0]),
-            Value::Array(_) => {
-                let tensor = Arc::<Tensor>::coerce(builder, from)?;
-                Ok(builder.wire_as_outlets(tract_core::ops::konst::Const::new(tensor), &[])?[0])
+            Value::Array(inputs) => {
+                let mut outlets = tvec!();
+                for i in inputs {
+                    let outlet = OutletId::coerce(builder, i)?;
+                    outlets.push(builder.wire_as_outlets(AxisOp::Add(0), &[outlet])?[0]);
+                }
+                builder
+                    .wire_as_outlets(tract_core::ops::array::TypedConcat::new(0), &outlets)
+                    .map(|o| o[0])
             }
             Value::String(s) => Ok(builder
                 .wire_as_outlets(tract_core::ops::konst::Const::new(rctensor0(s.clone())), &[])?

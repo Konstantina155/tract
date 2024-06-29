@@ -423,6 +423,13 @@ impl Tensor {
         self.len
     }
 
+    /// Get the number of valeus in the tensor.
+    #[inline]
+    #[allow(clippy::len_without_is_empty)]
+    pub fn volume(&self) -> usize {
+        self.len
+    }
+
     /// Get the shape of the tensor.
     #[inline]
     pub fn strides(&self) -> &[isize] {
@@ -1396,6 +1403,9 @@ impl Tensor {
     pub fn slice(&self, axis: usize, start: usize, end: usize) -> TractResult<Tensor> {
         if axis >= self.rank() {
             bail!("Can not slice at axis {} tensor {:?}", axis, self);
+        }
+        if start > self.shape[axis] || end > self.shape[axis] || start >= end {
+            bail!("Invalid slicing range {start}..{end} on axis {axis} for {self:?}");
         }
         fn slice_t<T: Datum>(
             t: &Tensor,

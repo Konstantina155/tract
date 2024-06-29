@@ -225,6 +225,7 @@ bin_to_super_type!(min, Min, linalg:Min,
                    q: [i8, u8, i32] => |c, a, b, _, _| *c = if a < b { *a } else { *b };
                    q_op_on_f32: |a: f32, b: f32| a.min(b),
                    [f16, f32, f64] => |c,a,b| *c = a.min(*b),
+                   [TDim] => |c,a,b| *c = a.clone().mini(b.clone()),
                    [i8, i16, i32, i64, u8, u16, u32, u64] => |c, a, b| *c = *a.min(b));
 
 bin_to_super_type!(max, Max,
@@ -272,6 +273,7 @@ bin_to_super_type!(max, Max,
                    q: [i8, u8, i32] => |c, a, b, _, _| *c = if a < b { *b } else { *a };
                    q_op_on_f32: |a: f32, b: f32| -> f32 {a.max(b)},
                    [f16, f32, f64] => |c,a,b| *c = a.max(*b),
+                   [TDim] => |c,a,b| *c = a.clone().maxi(b.clone()),
                    [i8, i16, i32, i64, u8, u16, u32, u64] => |c, a, b| *c = *a.max(b));
 
 bin_to_super_type!(pow, Pow,
@@ -336,7 +338,7 @@ fn declutter_mul(
     model: &TypedModel,
     node: &TypedNode,
 ) -> TractResult<Option<TypedModelPatch>> {
-    if node.inputs[0] == node.inputs[1] {
+    if node.inputs[0] == node.inputs[1] && !node.outputs[0].fact.datum_type.is_quantized() {
         return Ok(Some(TypedModelPatch::replace_single_op(
             model,
             node,
@@ -571,19 +573,19 @@ validation: Validation::Rounding
 element_wise!(ceil, Ceil, [f16, f32, f64] => |_, xs| {
     xs.iter_mut().for_each(|x| *x = x.ceil());
     Ok(())
-};
+}, [i8, i16,i32, i64, u8, u16, u32, u64, TDim] => |_, _| Ok(());
 q: [i8, u8, i32] => f32::recip);
 
 element_wise!(floor, Floor, [f16, f32, f64] => |_, xs| {
     xs.iter_mut().for_each(|x| *x = x.floor());
     Ok(())
-};
+}, [i8, i16,i32, i64, u8, u16, u32, u64, TDim] => |_, _| Ok(());
 q: [i8, u8, i32] => f32::floor);
 
 element_wise!(round, Round, [f16, f32, f64] => |_, xs| {
     xs.iter_mut().for_each(|x| *x = x.round());
     Ok(())
-};
+}, [i8, i16,i32, i64, u8, u16, u32, u64, TDim] => |_, _| Ok(());
 q: [i8, u8, i32] => f32::round);
 
 element_wise!(q_scale, QScale{scaler: Scaler},[i32] => |op, xs| {

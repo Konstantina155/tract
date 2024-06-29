@@ -580,7 +580,7 @@ where
             let output_2 = successors.get(1).map(|o| format!("{o:?}")).unwrap_or_default();
             writeln!(
                 fmt,
-                "{:5} | {:8} {:8} -> {:8} {:8} | {:25} {:50} {:?} => {:?}",
+                "{:5} | {:8} {:8} -> {:8} {:8} | {:25} {:50} {} => {}",
                 i,
                 input_1,
                 input_2,
@@ -588,8 +588,8 @@ where
                 output_2,
                 self.nodes[i].op().name(),
                 self.nodes[i].name,
-                self.node_input_facts(i).unwrap(),
-                self.node_output_facts(i).unwrap(),
+                self.node_input_facts(i).unwrap().iter().map(|f| format!("{f:?}")).join(" ; "),
+                self.node_output_facts(i).unwrap().iter().map(|f| format!("{f:?}")).join(" ; "),
             )?;
             if self.nodes[i].inputs.len() > 2 {
                 writeln!(
@@ -665,7 +665,6 @@ where
                 bail!("Invalid node id: position is {}, node is {}", ix, n);
             }
             if seen.contains(&n.name) {
-                eprintln!("{self}");
                 bail!("duplicate name {}", n.name);
             }
             seen.insert(&n.name);
@@ -674,8 +673,62 @@ where
     }
 
     pub fn compact(&mut self) -> TractResult<()> {
-        use crate::model::translator::Translate;
-        *self = crate::model::translator::IntoTranslator.translate_model(self)?;
+        let mut order = self.eval_order()?;
+        if order.len() == self.nodes.len() && order.iter().enumerate().all(|(a, b)| a == *b) {
+            return Ok(());
+        }
+        for i in &self.inputs {
+            if !order.contains(&i.node) {
+                order.push(i.node);
+            }
+        }
+        let mut old_to_new = vec![usize::MAX; self.nodes.len()];
+        let mut new_nodes = vec![
+            Node {
+                id: self.nodes.len(),
+                name: "".to_string(),
+                inputs: vec![],
+                op: self.create_dummy(),
+                outputs: tvec!(),
+            };
+            order.len()
+        ];
+        for (ix, id) in order.iter().enumerate() {
+            old_to_new[*id] = ix;
+            std::mem::swap(&mut new_nodes[ix], &mut self.nodes[*id]);
+        }
+        for node in &mut new_nodes {
+            if self.inputs.iter().any(|n| n.node == node.id) && !Self::is_source(&node.op) {
+                node.inputs.clear();
+                node.op = self.create_source(node.outputs[0].fact.clone());
+            }
+            node.id = old_to_new[node.id];
+            for input in &mut node.inputs {
+                assert!(old_to_new[input.node] < order.len());
+                input.node = old_to_new[input.node];
+            }
+            for output in &mut node.outputs {
+                for succ in &mut output.successors {
+                    succ.node = old_to_new[succ.node];
+                }
+                output.successors.retain(|s| s.node < order.len());
+            }
+        }
+        self.nodes = new_nodes;
+        for input in &mut self.inputs {
+            assert!(old_to_new[input.node] < order.len());
+            input.node = old_to_new[input.node];
+        }
+        for output in &mut self.outputs {
+            assert!(old_to_new[output.node] < order.len());
+            output.node = old_to_new[output.node];
+        }
+        self.outlet_labels = std::mem::take(&mut self.outlet_labels)
+            .into_iter()
+            .map(|(k, v)| (OutletId::new(old_to_new[k.node], k.slot), v))
+            .filter(|(k, _)| k.node < order.len())
+            .collect();
+        ensure!(self.nodes.iter().enumerate().all(|(ix, n)| n.id == ix));
         #[cfg(debug_assertions)]
         {
             self.check_compact().context("after graph compaction")?;
