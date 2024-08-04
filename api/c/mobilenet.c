@@ -64,7 +64,7 @@ free_predictions(prediction **inf, int length)
 }
 
 prediction *
-inference(char *model_name, TractValue *input, TractValue *input2, prediction *inf)
+inference(char *model_name, TractValue *input, TractValue *input2, prediction *inf, struct EncryptionParameters *params)
 {
     struct timeval t1, t2;
     double elapsedTime;
@@ -77,7 +77,7 @@ inference(char *model_name, TractValue *input, TractValue *input2, prediction *i
     // Load the model
     TractModel *model = NULL;
     TractInferenceModel *inference_model = NULL;
-    if (tract_onnx_model_for_path(onnx, model_name, &inference_model) != TRACT_RESULT_OK) {
+    if (tract_onnx_model_for_path(onnx, model_name, &inference_model, params) != TRACT_RESULT_OK) {
         fprintf(stderr, "Error loading model %s\n", model_name);
         free_prediction(inf);
         check(tract_onnx_destroy(&onnx));
@@ -171,6 +171,100 @@ decode_pb(FILE *fd)
     return shape;
 }
 
+// test tract decryption
+#define KEY_BYTES 32
+#define IV_BYTES 12
+#define TAG_BYTES 16
+#define ADD_DATA_BYTES 64
+
+uint8_t *
+write_to_buffer(char *filename)
+{
+    FILE *fd = fopen(filename, "rb");
+    if (!fd) {
+        fprintf(stderr, "Error opening file %s\n", filename);
+        return NULL;
+    }
+    fseek(fd, 0, SEEK_END);
+    long file_size = ftell(fd);
+    fseek(fd, 0, SEEK_SET);
+
+    rewind(fd);
+
+    uint8_t *data = (uint8_t *)malloc(file_size + 1);
+    if (!data) {
+        fprintf(stderr, "Memory allocation for %s failed\n", filename);
+        return NULL;
+    }
+    size_t read_len = fread(data, 1, file_size, fd);
+    if (read_len != (size_t)(file_size)) {
+        fprintf(stderr, "fread failed\n");
+        free(data);
+        fclose(fd);
+        return NULL;
+    }
+    fclose(fd);
+
+    return data;
+}
+// end testing
+
+uint8_t hex_char_to_int(char c) {
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    } else if (c >= 'a' && c <= 'f') {
+        return c - 'a' + 10;
+    } else if (c >= 'A' && c <= 'F') {
+        return c - 'A' + 10;
+    } else {
+        fprintf(stderr, "Invalid hexadecimal character: %c\n", c);
+        exit(EXIT_FAILURE);
+    }
+}
+
+// Function to convert a hex string to a byte vector
+uint8_t* hex_string_to_bytes(const char* hex_str, size_t* out_len) {
+    size_t len = strlen(hex_str);
+    if (len % 2 != 0) {
+        fprintf(stderr, "Invalid hex string length\n");
+        exit(EXIT_FAILURE);
+    }
+
+    size_t byte_len = len / 2;
+    uint8_t* bytes = (uint8_t*)malloc(byte_len);
+    if (bytes == NULL) {
+        perror("Failed to allocate memory");
+        exit(EXIT_FAILURE);
+    }
+
+    for (size_t i = 0; i < byte_len; ++i) {
+        bytes[i] = (hex_char_to_int(hex_str[2 * i]) << 4) | hex_char_to_int(hex_str[2 * i + 1]);
+    }
+
+    if (out_len != NULL) {
+        *out_len = byte_len;
+    }
+
+    return bytes;
+}
+
+int
+read_tokenizer(char *filename)
+{
+    FILE *fd = fopen(filename, "rb");
+    if (!fd) {
+        fprintf(stderr, "Error opening file %s\n", filename);
+        return -1;
+    }
+    fseek(fd, 0, SEEK_END);
+    long file_size = ftell(fd);
+    fseek(fd, 0, SEEK_SET);
+
+    rewind(fd);
+
+    return file_size;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -179,12 +273,78 @@ main(int argc, char **argv)
         return 1;
     }
 
+    //test tract decryption
+    EncryptionParameters *params = (EncryptionParameters *)malloc(sizeof(EncryptionParameters));
+    if (!params) {
+        fprintf(stderr, "Memory allocation for params failed\n");
+        return 1;
+    }
+    size_t len;
+    uint8_t *key = hex_string_to_bytes("65ddc559144ae2aecfe4b10432cb8a53a8e62a20957e902005b07e0509352d02", &len);
+    uint8_t *iv = hex_string_to_bytes("a0792200b9c64095886a94d7", &len);
+    uint8_t *aad = hex_string_to_bytes("f72ea3659d262b1d03b14a0a53a3c988cfadb418cf77aaeaee5544755f694484e7f2c787833f91a1c6e2c710ecdda85349fa49396009ad8b10e54517f1ab95f0", &len);
+    uint8_t *tag = NULL;
+    // key = write_to_buffer("aes/key.bin");
+    // iv = write_to_buffer("aes/iv.bin");
+    // aad = write_to_buffer("aes/add_data.bin");
+    if (!key || !iv || !aad) {
+        fprintf(stderr, "Error writing to buffer\n");
+        free(params);
+        return 1;
+    }
+    params->key = key;
+    params->iv = iv;
+    params->aad = aad;
+
+    // print the params
+    fprintf(stderr, "Key: ");
+    for (int i = 0; i < KEY_BYTES; i++) {
+        fprintf(stderr, "%02x", params->key[i]);
+    }
+    fprintf(stderr, "\nIV: ");
+    for (int i = 0; i < IV_BYTES; i++) {
+        fprintf(stderr, "%02x", params->iv[i]);
+    }
+    fprintf(stderr, "\nAAD: ");
+    for (int i = 0; i < ADD_DATA_BYTES; i++) {
+        fprintf(stderr, "%02x", params->aad[i]);
+    }
+    fprintf(stderr, "\n");
+    // end testing
+
     if (strcmp(argv[1], "albert") == 0) {
-        const char* model_path = "../../examples/pytorch-albert-v2/albert/";
-        char *inference = NULL;
-        check(tract_run_albert(model_path, &inference));
-        fprintf(stderr, "%s\n", inference);
-        tract_free_cstring(inference);
+        char tag_message[] = "92e2e37cc8b8e7ef9ef7e2f74b5984fa";
+        tag = (uint8_t *)malloc(TAG_BYTES * 2);
+        if (!tag) {
+            fprintf(stderr, "Memory allocation for tag failed\n");
+            return 1;
+        }
+        memcpy(tag, tag_message, TAG_BYTES * 2);
+        //tag = write_to_buffer(tag_message);
+        if (!tag) {
+            fprintf(stderr, "Error writing to buffer\n");
+            return 1;
+        }
+        params->tag = tag;
+        fprintf(stderr, "\nTag: ");
+        for (int i = 0; i < TAG_BYTES; i++) {
+            fprintf(stderr, "%02x", params->tag[i]);
+        }
+        fprintf(stderr, "\n");
+
+        char *model_for_path = "../../examples/pytorch-albert-v2/albert/encrypted_model.onnx";
+        char* inference = NULL;
+        int tokenizer_size = read_tokenizer("../../examples/pytorch-albert-v2/albert/tokenizer.json");
+        const uint8_t* tokenizer = write_to_buffer("../../examples/pytorch-albert-v2/albert/tokenizer.json");
+        check(tract_run_albert(model_for_path, tokenizer, tokenizer_size, &inference, params));
+        fprintf(stderr, "Inference: %s\n", inference);
+
+        free(inference);
+        free(tag);
+        free(key);
+        free(iv);
+        free(aad);
+        free(params);
         return 0;
     }
 
@@ -224,11 +384,53 @@ main(int argc, char **argv)
     //Hint for splitting the models into a node that is part of cut from parent node (circle)
     //The inference of the last model is gonna take the output of the 2 previous models, like input2, input3
     for (int i = 1; i < argc-1; i++) {
-        preds[i] = inference(argv[i], preds[i-1]->output, NULL, preds[i]);
+        int i_size=0, k=i;
+        while (k != 0) {
+            k /= 10;
+            i_size++;
+        }
+        char tag_message[] = "dcec09760a5fed9c54a093554631f5df";
+        tag = (uint8_t *)malloc(TAG_BYTES * 2);
+        if (!tag) {
+            fprintf(stderr, "Memory allocation for tag failed\n");
+            free_predictions(preds, argc-1);
+            return 1;
+        }
+        memcpy(tag, tag_message, TAG_BYTES * 2);
+        //tag = write_to_buffer(tag_message);
+        if (!tag) {
+            fprintf(stderr, "Error writing to buffer\n");
+            free_predictions(preds, argc-1);
+            return 1;
+        }
+        params->tag = tag;
+        fprintf(stderr, "\nTag: ");
+        for (int i = 0; i < TAG_BYTES; i++) {
+            fprintf(stderr, "%02x", params->tag[i]);
+        }
+        fprintf(stderr, "\n");
+        preds[i] = inference(argv[i], preds[i-1]->output, NULL, preds[i], params);
+        if (!preds[i]) {
+            fprintf(stderr, "Error running inference for model %s\n", argv[i]);
+            free_predictions(preds, argc-1);
+            free(tag);
+            free(key);
+            free(iv);
+            free(aad);
+            free(params);
+            return 1;
+        }
+        free(tag);
     }
 
     free_predictions(preds, argc-1);
     fprintf(stderr, "All done\n");
+
+    // testing
+    free(key);
+    free(iv);
+    free(aad);
+    free(params);
 
     return 0;
 }
