@@ -246,8 +246,9 @@ pub struct TractOnnx(tract_rs::Onnx);
 
 use tract_core::ndarray::s;
 use std::{
-    path::{Path, PathBuf},
+    path::PathBuf,
     str::FromStr,
+    slice
 };
 use tract_core::internal::tvec;
 use tract_core::internal::Tensor;
@@ -258,7 +259,10 @@ use tract_onnx::prelude::*;
 #[no_mangle]
 pub unsafe extern "C" fn tract_run_albert(
     model_path: *const c_char,
-    inference: *mut *mut c_char
+    tokenizer_buffer: *const u8,
+    tokenizer_buffer_size: usize,
+    inference: *mut *mut c_char,
+    params: *const tract_core::framework::EncryptionParameters
 ) -> TRACT_RESULT  {
     fn handle_error<T>(result: Result<T, anyhow::Error>) -> TRACT_RESULT {
         match result {
@@ -272,10 +276,15 @@ pub unsafe extern "C" fn tract_run_albert(
         let path = CStr::from_ptr(model_path).to_str()?;
         let model_dir = PathBuf::from_str(path)?;
         
-        let tokenizer_result = Tokenizer::from_file(Path::join(&model_dir, "tokenizer.json"));
+        let tokenizer_data = unsafe {
+            slice::from_raw_parts(tokenizer_buffer, tokenizer_buffer_size)
+        };
+
+        // Create the tokenizer from bytes
+        let tokenizer_result = Tokenizer::from_bytes(tokenizer_data);
         let tokenizer = match tokenizer_result {
             Ok(tokenizer) => tokenizer,
-            Err(_) => return Err(anyhow::anyhow!("Failed to load tokenizer")),
+            Err(_) => return Err(anyhow::anyhow!("Failed to read tokenizer")),
         };
 
         let text = "Paris is the [MASK] of France.";
@@ -295,7 +304,7 @@ pub unsafe extern "C" fn tract_run_albert(
             .ok_or_else(|| anyhow::anyhow!("Mask token not found"))?;
 
         let model = tract_onnx::onnx()
-            .model_for_path(Path::join(&model_dir, "model.onnx"))?
+            .model_for_path(model_dir, Some(params))?
             .into_optimized()?
             .into_runnable()?;
 
@@ -361,16 +370,20 @@ pub unsafe extern "C" fn tract_onnx_destroy(onnx: *mut *mut TractOnnx) -> TRACT_
 pub unsafe extern "C" fn tract_onnx_model_for_path(
     onnx: *const TractOnnx,
     path: *const c_char,
-    model: *mut *mut TractInferenceModel
+    model: *mut *mut TractInferenceModel,
+    params: *const tract_core::framework::EncryptionParameters
 ) -> TRACT_RESULT {
     wrap(|| unsafe {
         //Inside tract_onnx_model_for_path function
-        check_not_null!(onnx, path, model);
+        check_not_null!(onnx, path, model, params);
+
+        let params = &*params;
+        check_not_null!(params.key, params.iv, params.aad, params.tag);
 
         *model = std::ptr::null_mut();
         let path = CStr::from_ptr(path).to_str()?;
 
-        let m = Box::new(TractInferenceModel((*onnx).0.model_for_path(path)?));
+        let m = Box::new(TractInferenceModel((*onnx).0.model_for_path(path, Some(params))?));
         *model = Box::into_raw(m);
         Ok(())
     })
