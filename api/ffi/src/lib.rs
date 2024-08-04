@@ -336,7 +336,8 @@ pub unsafe extern "C" fn tract_run_albert(
         let word = tokenizer.id_to_token(word_id);
 
         // Handle the Option and create a CString
-        let c_word = CString::new(word.unwrap_or_else(|| "No word found".to_string()))?;
+        let formatted_string = format!("Inference: {}", word.unwrap_or_else(|| "No word found".to_string()));
+        let c_word = CString::new(formatted_string)?;
         *inference = c_word.into_raw(); // Pass the result back
         Ok(())
     })();

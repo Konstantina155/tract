@@ -337,7 +337,7 @@ main(int argc, char **argv)
         int tokenizer_size = read_tokenizer("../../examples/pytorch-albert-v2/albert/tokenizer.json");
         const uint8_t* tokenizer = write_to_buffer("../../examples/pytorch-albert-v2/albert/tokenizer.json");
         check(tract_run_albert(model_for_path, tokenizer, tokenizer_size, &inference, params));
-        fprintf(stderr, "Inference: %s\n", inference);
+        fprintf(stderr, "%s\n", inference);
 
         free(inference);
         free(tag);
