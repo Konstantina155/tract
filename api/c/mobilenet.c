@@ -171,6 +171,54 @@ decode_pb(FILE *fd)
     return shape;
 }
 
+uint8_t *
+write_to_buffer(char *filename)
+{
+    FILE *fd = fopen(filename, "rb");
+    if (!fd) {
+        fprintf(stderr, "Error opening file %s\n", filename);
+        return NULL;
+    }
+    fseek(fd, 0, SEEK_END);
+    long file_size = ftell(fd);
+    fseek(fd, 0, SEEK_SET);
+
+    rewind(fd);
+
+    uint8_t *data = (uint8_t *)malloc(file_size + 1);
+    if (!data) {
+        fprintf(stderr, "Memory allocation for %s failed\n", filename);
+        return NULL;
+    }
+    size_t read_len = fread(data, 1, file_size, fd);
+    if (read_len != (size_t)(file_size)) {
+        fprintf(stderr, "fread failed\n");
+        free(data);
+        fclose(fd);
+        return NULL;
+    }
+    fclose(fd);
+
+    return data;
+}
+
+int
+read_tokenizer(char *filename)
+{
+    FILE *fd = fopen(filename, "rb");
+    if (!fd) {
+        fprintf(stderr, "Error opening file %s\n", filename);
+        return -1;
+    }
+    fseek(fd, 0, SEEK_END);
+    long file_size = ftell(fd);
+    fseek(fd, 0, SEEK_SET);
+
+    rewind(fd);
+
+    return file_size;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -180,9 +228,11 @@ main(int argc, char **argv)
     }
 
     if (strcmp(argv[1], "albert") == 0) {
-        const char* model_path = "../../examples/pytorch-albert-v2/albert/";
-        char *inference = NULL;
-        check(tract_run_albert(model_path, &inference));
+        char *model_for_path = "../../examples/pytorch-albert-v2/albert/albert-large-v2.onnx";
+        char* inference = NULL;
+        int tokenizer_size = read_tokenizer("../../examples/pytorch-albert-v2/albert/tokenizer.json");
+        const uint8_t* tokenizer = write_to_buffer("../../examples/pytorch-albert-v2/albert/tokenizer.json");
+        check(tract_run_albert(model_for_path, tokenizer, tokenizer_size, &inference));
         fprintf(stderr, "%s\n", inference);
         tract_free_cstring(inference);
         return 0;

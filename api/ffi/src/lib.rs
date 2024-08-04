@@ -246,8 +246,9 @@ pub struct TractOnnx(tract_rs::Onnx);
 
 use tract_core::ndarray::s;
 use std::{
-    path::{Path, PathBuf},
+    path::PathBuf,
     str::FromStr,
+    slice
 };
 use tract_core::internal::tvec;
 use tract_core::internal::Tensor;
@@ -258,6 +259,8 @@ use tract_onnx::prelude::*;
 #[no_mangle]
 pub unsafe extern "C" fn tract_run_albert(
     model_path: *const c_char,
+    tokenizer_buffer: *const u8,
+    tokenizer_buffer_size: usize,
     inference: *mut *mut c_char
 ) -> TRACT_RESULT  {
     fn handle_error<T>(result: Result<T, anyhow::Error>) -> TRACT_RESULT {
@@ -272,10 +275,15 @@ pub unsafe extern "C" fn tract_run_albert(
         let path = CStr::from_ptr(model_path).to_str()?;
         let model_dir = PathBuf::from_str(path)?;
         
-        let tokenizer_result = Tokenizer::from_file(Path::join(&model_dir, "tokenizer.json"));
+        let tokenizer_data = unsafe {
+            slice::from_raw_parts(tokenizer_buffer, tokenizer_buffer_size)
+        };
+
+        // Create the tokenizer from bytes
+        let tokenizer_result = Tokenizer::from_bytes(tokenizer_data);
         let tokenizer = match tokenizer_result {
             Ok(tokenizer) => tokenizer,
-            Err(_) => return Err(anyhow::anyhow!("Failed to load tokenizer")),
+            Err(_) => return Err(anyhow::anyhow!("Failed to read tokenizer")),
         };
 
         let text = "Paris is the [MASK] of France.";
@@ -295,7 +303,7 @@ pub unsafe extern "C" fn tract_run_albert(
             .ok_or_else(|| anyhow::anyhow!("Mask token not found"))?;
 
         let model = tract_onnx::onnx()
-            .model_for_path(Path::join(&model_dir, "model.onnx"))?
+            .model_for_path(model_dir)?
             .into_optimized()?
             .into_runnable()?;
 
@@ -327,7 +335,8 @@ pub unsafe extern "C" fn tract_run_albert(
         let word = tokenizer.id_to_token(word_id);
 
         // Handle the Option and create a CString
-        let c_word = CString::new(word.unwrap_or_else(|| "No word found".to_string()))?;
+        let formatted_string = format!("Inference: {}", word.unwrap_or_else(|| "No word found".to_string()));
+        let c_word = CString::new(formatted_string)?;
         *inference = c_word.into_raw(); // Pass the result back
         Ok(())
     })();
