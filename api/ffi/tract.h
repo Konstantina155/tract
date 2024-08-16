@@ -177,11 +177,6 @@ enum TRACT_RESULT tract_onnx_create(struct TractOnnx **onnx);
  */
 enum TRACT_RESULT tract_onnx_destroy(struct TractOnnx **onnx);
 
-/**
- * Parse and load an ONNX model as a tract InferenceModel.
- * println!("cargo:rerun-if-changed=tract.h");
- * `path` is a null-terminated utf-8 string pointer. It must point to a `.onnx` model file.
- */
 enum TRACT_RESULT tract_onnx_model_for_path(const struct TractOnnx *onnx,
                                             const char *path,
                                             struct TractInferenceModel **model,
@@ -274,6 +269,11 @@ enum TRACT_RESULT tract_inference_model_analyse(struct TractInferenceModel *mode
  */
 enum TRACT_RESULT tract_inference_model_into_optimized(struct TractInferenceModel **model,
                                                        struct TractModel **optimized);
+
+/**
+ * Function to release the inference_model
+ */
+enum TRACT_RESULT tract_inference_model_release(struct TractInferenceModel **model);
 
 /**
  * Transform a fully analysed InferenceModel to a TypedModel.
