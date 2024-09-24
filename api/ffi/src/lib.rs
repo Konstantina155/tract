@@ -366,6 +366,7 @@ pub unsafe extern "C" fn tract_onnx_destroy(onnx: *mut *mut TractOnnx) -> TRACT_
 /// Parse and load an ONNX model as a tract InferenceModel.
 /// println!("cargo:rerun-if-changed=tract.h");
 /// `path` is a null-terminated utf-8 string pointer. It must point to a `.onnx` model file.
+use std::sync::Arc;
 #[no_mangle]
 pub unsafe extern "C" fn tract_onnx_model_for_path(
     onnx: *const TractOnnx,
@@ -378,9 +379,8 @@ pub unsafe extern "C" fn tract_onnx_model_for_path(
 
         *model = std::ptr::null_mut();
         let path = CStr::from_ptr(path).to_str()?;
-
-        let m = Box::new(TractInferenceModel((*onnx).0.model_for_path(path)?));
-        *model = Box::into_raw(m);
+        let m = Arc::new(TractInferenceModel((*onnx).0.model_for_path(path)?));
+        *model = Arc::into_raw(m) as *mut _;
         Ok(())
     })
 }
@@ -574,6 +574,20 @@ pub unsafe extern "C" fn tract_inference_model_into_optimized(
     })
 }
 
+/// Function to release the inference_model
+#[no_mangle]
+pub unsafe extern "C" fn tract_inference_model_release(
+    model: *mut *mut TractInferenceModel,
+) -> TRACT_RESULT {
+    wrap(|| unsafe {
+        check_not_null!(model, *model);
+        let model_ptr = *model;
+        let _ = Arc::from_raw(model_ptr);
+        *model = std::ptr::null_mut();
+        Ok(())
+    })
+}
+
 /// Transform a fully analysed InferenceModel to a TypedModel.
 ///
 /// This function takes ownership of the InferenceModel `model` whether it succeeds
@@ -587,12 +601,20 @@ pub unsafe extern "C" fn tract_inference_model_into_typed(
 ) -> TRACT_RESULT {
     wrap(|| unsafe {
         check_not_null!(model, *model, typed);
-        *typed = std::ptr::null_mut();
-        let m = Box::from_raw(*model);
-        *model = std::ptr::null_mut();
-        let result = m.0.into_typed()?;
-        *typed = Box::into_raw(Box::new(TractModel(result))) as _;
-        Ok(())
+        let model_arc = Arc::from_raw(*model);
+        let cloned_model_arc = model_arc.clone();
+        let result = cloned_model_arc.0.clone().into_optimized();
+        *model = Arc::into_raw(model_arc) as *mut _;
+
+        match result {
+            Ok(typed_model) => {
+                *typed = Box::into_raw(Box::new(TractModel(typed_model))) as *mut _;
+                Ok(())
+            }
+            Err(e) => {
+                Err(e)
+            }
+        }
     })
 }
 
@@ -848,9 +870,9 @@ pub unsafe extern "C" fn tract_model_into_runnable(
 ) -> TRACT_RESULT {
     wrap(|| unsafe {
         check_not_null!(model, runnable);
-        let m = Box::from_raw(*model).0;
+        let m = Box::from_raw(*model);
         *model = std::ptr::null_mut();
-        *runnable = Box::into_raw(Box::new(TractRunnable(m.into_runnable()?))) as _;
+        *runnable = Box::into_raw(Box::new(TractRunnable(m.0.into_runnable()?))) as _;
         Ok(())
     })
 }

@@ -93,6 +93,11 @@ impl OnnxInterface for Onnx {
 }
 
 pub struct InferenceModel(tract_onnx::prelude::InferenceModel);
+impl Clone for InferenceModel {
+    fn clone(&self) -> Self {
+        InferenceModel(self.0.clone())
+    }
+}
 impl InferenceModelInterface for InferenceModel {
     type Model = Model;
     type InferenceFact = InferenceFact;
