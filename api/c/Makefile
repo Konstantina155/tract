@@ -1,4 +1,4 @@
-all: tract.h libtract.a mobilenet
+all: mobilenet
 
 mobilenet: tract.h libtract.a mobilenet.c
 	cc -g mobilenet.c -o mobilenet -L. -I. -ltract -lm -lpthread -ldl
