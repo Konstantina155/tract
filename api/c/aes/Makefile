@@ -1,7 +1,6 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -Wpedantic -Werror -g -no-pie
-LDFLAGS = -I/home1/public/papafrkon/dAIEdgeServer/include -I./include -L/home1/public/papafrkon/dAIEdgeServer/lib -lmbedtls -lmbedx509 -lmbedcrypto
-#LDFLAGS = -I/home/konstantina/Desktop/CARV/dAIEdge/inference/dAIEdgeServer/include -I./include -L/home/konstantina/Desktop/CARV/dAIEdge/inference/dAIEdgeServer/lib -lmbedtls -lmbedx509 -lmbedcrypto
+LDFLAGS = -I/hdd/papafrkon/dAIEdgeServer/include -I./include -L/hdd/papafrkon/dAIEdgeServer/lib -lmbedtls -lmbedx509 -lmbedcrypto
 
 all: cbc_final gcm
 

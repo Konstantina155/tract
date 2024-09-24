@@ -113,6 +113,7 @@ inference(char *model_name, TractValue *input, TractValue *input2, prediction *i
 
     // simple stateless run...
     TractValue *inputs[] = { input, input2 };
+    fprintf(stderr, "Run model %s\n", model_name);
     check(tract_runnable_run(runnable, inputs, &output));
 
     const float *data = NULL;
@@ -138,53 +139,6 @@ inference(char *model_name, TractValue *input, TractValue *input2, prediction *i
     elapsedTime = (t2.tv_sec - t1.tv_sec) * 1000.0;      // sec to ms
     elapsedTime += (t2.tv_usec - t1.tv_usec) / 1000.0;   // us to ms
     printf("Model run in %f ms.\n", elapsedTime);
-
-    inf->output = output;
-    inf->pred = max;
-    inf->category = argmax;
-    inf->inference_model = inference_model;
-
-    return inf;
-}
-
-prediction *
-inference_test(TractValue *input, TractValue *input2, prediction *inf, TractInferenceModel *inference_model)
-{
-    // Load the model
-    TractModel *model = NULL;
-    // Convert inference model to a typed model and optimize it
-    check(tract_inference_model_into_optimized(&inference_model,&model));
-    assert(model);
-
-    // Make the model runnable
-    TractRunnable *runnable = NULL;
-    check(tract_model_into_runnable(&model, &runnable));
-    assert(runnable);
-    assert(!model);
-
-    TractValue* output = NULL;
-
-    // simple stateless run...
-    TractValue *inputs[] = { input, input2 };
-    check(tract_runnable_run(runnable, inputs, &output));
-
-    const float *data = NULL;
-    check(tract_value_as_bytes(output, NULL, NULL, NULL, (const void**) &data));
-
-    check(tract_runnable_release(&runnable));
-    assert(!runnable);
-
-    float max = data[0];
-    int argmax = 0;
-    for(int i = 0; i < 1000; i++) {
-        float val = data[i];
-        if(val > max) {
-            max = val;
-            argmax = i;
-        }
-    }
-    assert(data[argmax] == max);
-    fprintf(stderr, "\nMax is %f for category %d\n", max, argmax);
 
     inf->output = output;
     inf->pred = max;
@@ -335,9 +289,6 @@ main(int argc, char **argv)
         return 1;
     }
     size_t len;
-    // uint8_t *key = hex_string_to_bytes("65ddc559144ae2aecfe4b10432cb8a53a8e62a20957e902005b07e0509352d02", &len);
-    // uint8_t *iv = hex_string_to_bytes("a0792200b9c64095886a94d7", &len);
-    // uint8_t *aad = hex_string_to_bytes("f72ea3659d262b1d03b14a0a53a3c988cfadb418cf77aaeaee5544755f694484e7f2c787833f91a1c6e2c710ecdda85349fa49396009ad8b10e54517f1ab95f0", &len);
     uint8_t *tag = NULL;
     uint8_t *key = write_to_buffer("aes/key.bin");
     uint8_t *iv = write_to_buffer("aes/iv.bin");
@@ -436,15 +387,13 @@ main(int argc, char **argv)
     check(tract_value_from_bytes(TRACT_DATUM_TYPE_F32, 4, shape, image, &preds[0]->output));
     free(image);
 
-    //Hint for splitting the models into a node that is part of cut from parent node (circle)
-    //The inference of the last model is gonna take the output of the 2 previous models, like input2, input3
     for (int i = 1; i < argc-1; i++) {
         int i_size=0, k=i;
         while (k != 0) {
             k /= 10;
             i_size++;
         }
-        char tag_message[] = "de5aa8837f852d6cea1e77cab49e4831";
+        char tag_message[] = "835705756bf8ac03cf25b8b4dd2fcbfc";
         tag = (uint8_t *)malloc(TAG_BYTES * 2);
         if (!tag) {
             fprintf(stderr, "Memory allocation for tag failed\n");
@@ -452,7 +401,6 @@ main(int argc, char **argv)
             return 1;
         }
         memcpy(tag, tag_message, TAG_BYTES * 2);
-        //tag = write_to_buffer(tag_message);
         if (!tag) {
             fprintf(stderr, "Error writing to buffer\n");
             free_predictions(preds, argc-1);
@@ -476,20 +424,7 @@ main(int argc, char **argv)
             return 1;
         }
         free(tag);
-        preds[i+1] = malloc(sizeof(prediction));
-        if (!preds[i+1]) {
-            fprintf(stderr, "Error allocating memory for prediction\n");
-            return 1;
-        }
-        preds[i+1]->pred = 0.0;
-        preds[i+1]->category = 0;
-        preds[i+1]->output = NULL;
-        preds[i+1]->inference_model = NULL;
-        preds[i+1] = inference_test(preds[i-1]->output, NULL, preds[i+1], preds[i]->inference_model);
-        free_prediction(preds[i+1]);
     }
-
-    
 
     free_predictions(preds, argc-1);
     fprintf(stderr, "All done\n");

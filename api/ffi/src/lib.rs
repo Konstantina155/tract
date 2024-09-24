@@ -614,12 +614,20 @@ pub unsafe extern "C" fn tract_inference_model_into_typed(
 ) -> TRACT_RESULT {
     wrap(|| unsafe {
         check_not_null!(model, *model, typed);
-        *typed = std::ptr::null_mut();
-        let m = Box::from_raw(*model);
-        *model = std::ptr::null_mut();
-        let result = m.0.into_typed()?;
-        *typed = Box::into_raw(Box::new(TractModel(result))) as _;
-        Ok(())
+        let model_arc = Arc::from_raw(*model);
+        let cloned_model_arc = model_arc.clone();
+        let result = cloned_model_arc.0.clone().into_optimized();
+        *model = Arc::into_raw(model_arc) as *mut _;
+
+        match result {
+            Ok(typed_model) => {
+                *typed = Box::into_raw(Box::new(TractModel(typed_model))) as *mut _;
+                Ok(())
+            }
+            Err(e) => {
+                Err(e)
+            }
+        }
     })
 }
 
@@ -980,7 +988,9 @@ pub unsafe extern "C" fn tract_runnable_run(
 ) -> TRACT_RESULT {
     wrap(|| unsafe {
         check_not_null!(runnable);
-        let mut s = (*runnable).0.spawn_state()?;
+        //Inside tract_runnable_run
+        let mut s = (*runnable).0.spawn_state()?; //creates the state
+        //After creating state
         state_run(&mut s, inputs, outputs)
     })
 }
@@ -1253,9 +1263,12 @@ unsafe fn state_run(
         .iter()
         .map(|tv| (**tv).0.clone())
         .collect();
+        //Inside state_run
     let values = state.run(values)?;
+    //After state_run
     for (i, value) in values.into_iter().enumerate() {
         *(outputs.add(i)) = Box::into_raw(Box::new(TractValue(value)))
     }
+    //After for loop
     Ok(())
 }

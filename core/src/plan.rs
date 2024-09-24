@@ -171,6 +171,7 @@ where
 
     /// Reset wires state.
     pub fn reset_turn(&mut self) -> TractResult<()> {
+        // Inside resetting turn
         for node in &self.plan.borrow().order {
             self.values[*node] = None;
         }
@@ -188,6 +189,7 @@ where
     }
 
     pub fn run(&mut self, inputs: TVec<TValue>) -> TractResult<TVec<TValue>> {
+        // Inside in here to run the model
         self.run_plan_with_eval(inputs, self::eval)
     }
 
@@ -209,9 +211,11 @@ where
         ) -> Result<TVec<TValue>, E>,
         E: Into<anyhow::Error> + Send + Sync + 'static,
     {
+        //Inside in here to run the model in run_plan_with_eval
         self.set_inputs(inputs)?;
         self.exec_plan_with_eval(eval)?;
         let outputs = self.outputs()?;
+        //Inside in here before reset_turn
         self.reset_turn()?;
         Ok(outputs)
     }
@@ -238,24 +242,29 @@ where
             let model = plan.model();
             for (step, n) in plan.order.iter().enumerate() {
                 let node = model.node(*n);
+                //Inside Running step {}, node {}", step, node);
                 trace!("Running step {}, node {}", step, node);
                 let mut inputs: TVec<TValue> = tvec![];
                 for i in &node.inputs {
+                    //Inside   use input {:?}", i);
                     trace!("  use input {:?}", i);
                     let prec_node = model.node(i.node);
                     let prec = values[i.node].as_ref().ok_or_else(|| {
+                        //inside Computing {}, precursor {} not done:", node, prec_node);
                         format_err!("Computing {}, precursor {} not done:", node, prec_node)
                     })?;
                     inputs.push(prec[i.slot].clone())
                 }
 
                 for flush in &plan.flush_lists[step] {
+                    //Inside  Ran {} can now flush {}", node, model.node(*flush));
                     trace!("  Ran {} can now flush {}", node, model.node(*flush));
                     values[*flush] = None;
                 }
 
                 if cfg!(debug_assertions) {
                     let facts = model.node_input_facts(node.id)?;
+                    //Inside   Facts: {:?}", facts);
                     if facts.len() != inputs.len() {
                         bail!(
                             "Evaluating {}: expected {} inputs, got {}",
@@ -265,6 +274,7 @@ where
                         );
                     }
                     for (ix, (v, f)) in inputs.iter().zip(facts.iter()).enumerate() {
+                        //Inside  Checking input {:?}", ix);
                         if !f.matches(v, Some(&session_state.resolved_symbols))? {
                             bail!(
                                 "Evaluating {}: input {:?}, expected {:?}, got {:?}",
@@ -279,8 +289,10 @@ where
 
                 let vs = eval(session_state, states[node.id].as_deref_mut(), node, inputs)
                     .map_err(|e| e.into())?;
+                //Inside Vs: {:?}", vs);
 
                 if plan.has_unresolved_symbols {
+                    //Inside  Resolving symbols for {}", node);
                     for (o, v) in node.outputs.iter().zip(vs.iter()) {
                         if let Ok(f) = o.fact.to_typed_fact() {
                             for (dim_abstract, dim_concrete) in f.shape.iter().zip(v.shape()) {
@@ -295,6 +307,7 @@ where
                 }
                 if cfg!(debug_assertions) {
                     let facts = model.node_output_facts(node.id)?;
+                    //Inside  Output Facts: {:?}", facts);
                     if facts.len() != vs.len() {
                         bail!(
                             "Evaluating {}: expected {} outputs, got {}",
@@ -307,6 +320,7 @@ where
                         if node.outputs[ix].successors.len() == 0 {
                             continue;
                         }
+                        //Inside "Evaluating {}: output {:?}, expected {:?}, got {:?}", node, ix, f, v);
                         if !f.matches(v, Some(&session_state.resolved_symbols))? {
                             bail!(
                                 "Evaluating {}: output {:?}, expected {:?}, got {:?}",
