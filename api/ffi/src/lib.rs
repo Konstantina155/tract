@@ -603,7 +603,7 @@ pub unsafe extern "C" fn tract_inference_model_into_typed(
         check_not_null!(model, *model, typed);
         let model_arc = Arc::from_raw(*model);
         let cloned_model_arc = model_arc.clone();
-        let result = cloned_model_arc.0.clone().into_optimized();
+        let result = cloned_model_arc.0.clone().into_typed();
         *model = Arc::into_raw(model_arc) as *mut _;
 
         match result {
