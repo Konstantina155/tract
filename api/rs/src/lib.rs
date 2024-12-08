@@ -88,7 +88,7 @@ pub struct Onnx(tract_onnx::Onnx);
 impl OnnxInterface for Onnx {
     type InferenceModel = InferenceModel;
     fn model_for_path(&self, path: impl AsRef<Path>, params: Option<*const tract_core::framework::EncryptionParameters>) -> Result<Self::InferenceModel> {
-        //Inside the model_for_path function in OnnxInterface
+        // Inside the model_for_path function in OnnxInterface
         let params = match params {
             Some(params) => unsafe { &*params },
             None => anyhow::bail!("Encryption params is null!")
@@ -360,6 +360,7 @@ impl StateInterface for State {
         V: TryInto<Value, Error = E>,
         E: Into<anyhow::Error>,
     {
+        // Inside here to run state
         let inputs: TVec<TValue> = inputs
             .into_iter()
             .map(|i| i.try_into().map_err(|e| e.into()).map(|v| v.0))

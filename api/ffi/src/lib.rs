@@ -376,7 +376,7 @@ pub unsafe extern "C" fn tract_onnx_model_for_path(
     params: *const tract_core::framework::EncryptionParameters
 ) -> TRACT_RESULT {
     wrap(|| unsafe {
-        //Inside tract_onnx_model_for_path function
+        // Inside tract_onnx_model_for_path function
         check_not_null!(onnx, path, model, params);
 
         let params = &*params;
@@ -616,7 +616,7 @@ pub unsafe extern "C" fn tract_inference_model_into_typed(
         check_not_null!(model, *model, typed);
         let model_arc = Arc::from_raw(*model);
         let cloned_model_arc = model_arc.clone();
-        let result = cloned_model_arc.0.clone().into_optimized();
+        let result = cloned_model_arc.0.clone().into_typed();
         *model = Arc::into_raw(model_arc) as *mut _;
 
         match result {
@@ -988,9 +988,9 @@ pub unsafe extern "C" fn tract_runnable_run(
 ) -> TRACT_RESULT {
     wrap(|| unsafe {
         check_not_null!(runnable);
-        //Inside tract_runnable_run
+        // Inside tract_runnable_run
         let mut s = (*runnable).0.spawn_state()?; //creates the state
-        //After creating state
+        // After creating state
         state_run(&mut s, inputs, outputs)
     })
 }
@@ -1263,7 +1263,7 @@ unsafe fn state_run(
         .iter()
         .map(|tv| (**tv).0.clone())
         .collect();
-        //Inside state_run
+        // Inside state_run
     let values = state.run(values)?;
     //After state_run
     for (i, value) in values.into_iter().enumerate() {

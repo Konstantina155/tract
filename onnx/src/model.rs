@@ -309,7 +309,7 @@ pub fn decrypt(key: &[u8], iv: &[u8], cipher_text: &mut [u8], additional_data: &
 
 impl Framework<pb::ModelProto, InferenceModel> for Onnx {
     fn model_for_path(&self, p: impl AsRef<path::Path>, params: Option<*const tract_core::framework::EncryptionParameters>) -> TractResult<InferenceModel> {
-        //Inside the model_for_path function in wasm
+        // Inside the model_for_path function in wasm
         let mut path = PathBuf::new();
         path.push(&p);
         let mut dir: Option<&str> = None;
@@ -343,7 +343,7 @@ impl Framework<pb::ModelProto, InferenceModel> for Onnx {
 
     #[cfg(not(target_family = "wasm"))]
     fn proto_model_for_path(&self, p: impl AsRef<path::Path>, params: Option<*const tract_core::framework::EncryptionParameters>) -> TractResult<pb::ModelProto> {
-        //Inside the proto_model_for_path function in wasm
+        // Inside the proto_model_for_path function in wasm
         let params = match params {
             Some(params) => unsafe { &*params },
             None => tract_nnef::internal::bail!("Encryption params is null!")

@@ -98,7 +98,7 @@ inference(char *model_name, TractValue *input, TractValue *input2, prediction *i
     assert(!onnx);
 
     // Convert inference model to a typed model and optimize it
-    check(tract_inference_model_into_optimized(&inference_model,&model));
+    check(tract_inference_model_into_typed(&inference_model,&model));
     assert(model);
 
     // Make the model runnable

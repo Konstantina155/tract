@@ -142,6 +142,7 @@ where
     _phantom: PhantomData<(M, F, O)>,
 }
 
+use std::time::Instant;
 impl<F, O, M, P> SimpleState<F, O, M, P>
 where
     F: Fact + Clone + 'static,
@@ -211,11 +212,11 @@ where
         ) -> Result<TVec<TValue>, E>,
         E: Into<anyhow::Error> + Send + Sync + 'static,
     {
-        //Inside in here to run the model in run_plan_with_eval
+        // Inside in here to run the model in run_plan_with_eval
         self.set_inputs(inputs)?;
         self.exec_plan_with_eval(eval)?;
         let outputs = self.outputs()?;
-        //Inside in here before reset_turn
+        // Inside in here before reset_turn
         self.reset_turn()?;
         Ok(outputs)
     }
@@ -241,30 +242,43 @@ where
             let plan = plan.borrow();
             let model = plan.model();
             for (step, n) in plan.order.iter().enumerate() {
+                // Inside Running step {}, node {}", step, node);
+                let mut start_time: Option<Instant> = None;
+
+                #[cfg(feature = "use_sys_time")]
+                {
+                    start_time = Some(Instant::now());
+                }
+
                 let node = model.node(*n);
-                //Inside Running step {}, node {}", step, node);
+                
+                #[cfg(feature = "use_sys_time")]
+                {
+                    println!("Running step {}, node {}", step, node);
+                }
+
                 trace!("Running step {}, node {}", step, node);
                 let mut inputs: TVec<TValue> = tvec![];
                 for i in &node.inputs {
-                    //Inside   use input {:?}", i);
+                    // Inside use input {:?}", i);
                     trace!("  use input {:?}", i);
                     let prec_node = model.node(i.node);
                     let prec = values[i.node].as_ref().ok_or_else(|| {
-                        //inside Computing {}, precursor {} not done:", node, prec_node);
+                        // Inside Computing {}, precursor {} not done:", node, prec_node);
                         format_err!("Computing {}, precursor {} not done:", node, prec_node)
                     })?;
                     inputs.push(prec[i.slot].clone())
                 }
 
                 for flush in &plan.flush_lists[step] {
-                    //Inside  Ran {} can now flush {}", node, model.node(*flush));
+                    // Inside  Ran {} can now flush {}", node, model.node(*flush));
                     trace!("  Ran {} can now flush {}", node, model.node(*flush));
                     values[*flush] = None;
                 }
 
                 if cfg!(debug_assertions) {
                     let facts = model.node_input_facts(node.id)?;
-                    //Inside   Facts: {:?}", facts);
+                    // Inside  Facts: {:?}", facts);
                     if facts.len() != inputs.len() {
                         bail!(
                             "Evaluating {}: expected {} inputs, got {}",
@@ -274,7 +288,7 @@ where
                         );
                     }
                     for (ix, (v, f)) in inputs.iter().zip(facts.iter()).enumerate() {
-                        //Inside  Checking input {:?}", ix);
+                        // Inside  Checking input {:?}", ix);
                         if !f.matches(v, Some(&session_state.resolved_symbols))? {
                             bail!(
                                 "Evaluating {}: input {:?}, expected {:?}, got {:?}",
@@ -289,10 +303,10 @@ where
 
                 let vs = eval(session_state, states[node.id].as_deref_mut(), node, inputs)
                     .map_err(|e| e.into())?;
-                //Inside Vs: {:?}", vs);
+                // Inside Vs: {:?}", vs);
 
                 if plan.has_unresolved_symbols {
-                    //Inside  Resolving symbols for {}", node);
+                    // Inside  Resolving symbols for {}", node);
                     for (o, v) in node.outputs.iter().zip(vs.iter()) {
                         if let Ok(f) = o.fact.to_typed_fact() {
                             for (dim_abstract, dim_concrete) in f.shape.iter().zip(v.shape()) {
@@ -307,7 +321,7 @@ where
                 }
                 if cfg!(debug_assertions) {
                     let facts = model.node_output_facts(node.id)?;
-                    //Inside  Output Facts: {:?}", facts);
+                    // Inside  Output Facts: {:?}", facts);
                     if facts.len() != vs.len() {
                         bail!(
                             "Evaluating {}: expected {} outputs, got {}",
@@ -320,7 +334,7 @@ where
                         if node.outputs[ix].successors.len() == 0 {
                             continue;
                         }
-                        //Inside "Evaluating {}: output {:?}, expected {:?}, got {:?}", node, ix, f, v);
+                        // Inside "Evaluating {}: output {:?}, expected {:?}, got {:?}", node, ix, f, v);
                         if !f.matches(v, Some(&session_state.resolved_symbols))? {
                             bail!(
                                 "Evaluating {}: output {:?}, expected {:?}, got {:?}",
@@ -334,7 +348,15 @@ where
                 }
 
                 values[node.id] = Some(vs);
-            }
+                
+                #[cfg(feature = "use_sys_time")]
+                {
+                    if let Some(start_time) = start_time {
+                        let elapsed = start_time.elapsed().as_micros();
+                        println!("     takes {} μs", elapsed);
+                    }
+                }
+            }    
         }
         Ok(())
     }
