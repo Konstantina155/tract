@@ -352,8 +352,8 @@ where
                 #[cfg(feature = "use_sys_time")]
                 {
                     if let Some(start_time) = start_time {
-                        let elapsed = start_time.elapsed().as_micros();
-                        println!("     takes {} μs", elapsed);
+                        let elapsed = start_time.elapsed().as_secs_f64() * 1000.0;
+                        println!("     takes {:.2} ms", elapsed);
                     }
                 }
             }    
