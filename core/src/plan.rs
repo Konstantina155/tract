@@ -353,7 +353,7 @@ where
                 {
                     if let Some(start_time) = start_time {
                         let elapsed = start_time.elapsed().as_secs_f64() * 1000.0;
-                        println!("     takes {:.2} ms", elapsed);
+                        println!("     takes {:.4} ms", elapsed);
                     }
                 }
             }    
