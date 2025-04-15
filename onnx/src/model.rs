@@ -367,6 +367,7 @@ impl Framework<pb::ModelProto, InferenceModel> for Onnx {
 
         let mut model_data = map.to_vec();
         
+        
         match decrypt(key, iv, &mut model_data, aad, &tag_bytes) {
             Ok(_) => {
                 match crate::pb::ModelProto::decode(&*model_data) {
