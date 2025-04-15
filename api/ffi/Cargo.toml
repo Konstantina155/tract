@@ -27,5 +27,8 @@ serde.workspace = true
 serde_json.workspace = true
 tract-api = { path = ".." , version = "=0.21.4-pre" }
 tract-rs = { path = "../rs" , version = "=0.21.4-pre" }
-tract-core = { path = "../../core" , version = "=0.21.4-pre" }
+tract-core = { path = "../../core" , version = "=0.21.4-pre", default-features = false }
 tract-onnx = { path = "../../onnx" , version = "=0.21.4-pre" }
+
+[features]
+use_sys_time = ["tract-core/use_sys_time"]
