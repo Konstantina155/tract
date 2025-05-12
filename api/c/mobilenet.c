@@ -228,11 +228,11 @@ main(int argc, char **argv)
     }
 
     if (strcmp(argv[1], "albert") == 0) {
-        char *model_for_path = "../../examples/pytorch-albert-v2/albert/albert-large-v2.onnx";
+        char *model_for_path = "/hdd/papafrkon/dAIEdgeServer/models/albert-large-v2/albert-large-v2.onnx";
         char* inference = NULL;
-        int tokenizer_size = read_tokenizer("../../examples/pytorch-albert-v2/albert/tokenizer.json");
-        const uint8_t* tokenizer = write_to_buffer("../../examples/pytorch-albert-v2/albert/tokenizer.json");
-        check(tract_run_albert(model_for_path, tokenizer, tokenizer_size, &inference));
+        int tokenizer_size = read_tokenizer("/hdd/papafrkon/dAIEdgeServer/models/albert-large-v2/tokenizer.json");
+        const uint8_t* tokenizer = write_to_buffer("/hdd/papafrkon/dAIEdgeServer/models/albert-large-v2/tokenizer.json");
+        check(tract_run_albert(model_for_path, tokenizer, tokenizer_size, &inference, NULL));
         fprintf(stderr, "%s\n", inference);
         tract_free_cstring(inference);
         return 0;
