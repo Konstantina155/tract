@@ -1,10 +1,14 @@
 USE_SYS_TIME ?= 0
+USE_MEMORY_ONLY ?= 0
 
 ifeq ($(USE_SYS_TIME), 1)
     CFLAGS += -DUSE_SYS_TIME
     FEATURE_FLAG = --features "use_sys_time"
 else
     FEATURE_FLAG =
+endif
+ifeq ($(USE_MEMORY_ONLY), 1)
+	CFLAGS += -DUSE_MEMORY_ONLY
 endif
 
 all: mobilenet

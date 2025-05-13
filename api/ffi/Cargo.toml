@@ -19,6 +19,8 @@ crate-type = ["staticlib"]
 maintenance = { status = "actively-developed" }
 
 [dependencies]
+rand = "0.8"
+regex = "1"
 tokenizers.workspace = true
 clap_builder = { version = "4.4" }
 anyhow.workspace = true
@@ -29,6 +31,7 @@ tract-api = { path = ".." , version = "=0.21.4-pre" }
 tract-rs = { path = "../rs" , version = "=0.21.4-pre" }
 tract-core = { path = "../../core" , version = "=0.21.4-pre", default-features = false }
 tract-onnx = { path = "../../onnx" , version = "=0.21.4-pre" }
+tract-hir = { path = "../../hir", version = "=0.21.4-pre" }
 
 [features]
 use_sys_time = ["tract-core/use_sys_time"]

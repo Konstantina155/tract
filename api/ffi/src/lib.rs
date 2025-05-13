@@ -244,7 +244,7 @@ pub unsafe extern "C" fn tract_nnef_write_model_to_dir(
 // ONNX
 pub struct TractOnnx(tract_rs::Onnx);
 
-use tract_core::ndarray::s;
+use tract_core::ndarray::{s,Array2};
 use std::{
     path::PathBuf,
     str::FromStr,
@@ -254,15 +254,19 @@ use tract_core::internal::tvec;
 use tract_core::internal::Tensor;
 use tokenizers::tokenizer::{Tokenizer};
 use tract_onnx::prelude::*;
+use rand::seq::SliceRandom;
+use rand::thread_rng;
+use regex::Regex;
+use tract_hir::internal::InferenceOp;
+
 /// Run the Albert example from the tract-onnx crate.
 /// The returned char must be freed with tract_free_cstring().
+pub type MyInferenceModel = Graph<InferenceFact, Box<dyn InferenceOp>>;
 #[no_mangle]
-pub unsafe extern "C" fn tract_run_albert(
+pub unsafe extern "C" fn tract_load_nlp_model(
     model_path: *const c_char,
-    tokenizer_buffer: *const u8,
-    tokenizer_buffer_size: usize,
-    inference: *mut *mut c_char,
-    params: *const tract_core::framework::EncryptionParameters
+    params: *const tract_core::framework::EncryptionParameters,
+    inference_model: *mut *mut MyInferenceModel
 ) -> TRACT_RESULT  {
     fn handle_error<T>(result: Result<T, anyhow::Error>) -> TRACT_RESULT {
         match result {
@@ -275,7 +279,43 @@ pub unsafe extern "C" fn tract_run_albert(
     let result = (|| -> Result<(), anyhow::Error> {
         let path = CStr::from_ptr(model_path).to_str()?;
         let model_dir = PathBuf::from_str(path)?;
-        
+        let model = tract_onnx::onnx().model_for_path(model_dir, Some(params))?;
+        *inference_model = Box::into_raw(Box::new(model));
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_run_albert(
+    model_path: *const c_char,
+    tokenizer_buffer: *const u8,
+    tokenizer_buffer_size: usize,
+    inference: *mut *mut c_char,
+    params: *const tract_core::framework::EncryptionParameters,
+    inference_model: *mut *mut MyInferenceModel
+) -> TRACT_RESULT  {
+    fn handle_error<T>(result: Result<T, anyhow::Error>) -> TRACT_RESULT {
+        match result {
+            Ok(_) => TRACT_RESULT::TRACT_RESULT_OK,
+            Err(_) => TRACT_RESULT::TRACT_RESULT_KO,
+        }
+    }
+
+    // Define the result to be returned
+    let result = (|| -> Result<(), anyhow::Error> {
+        let model;
+        if inference_model.is_null() {
+            let path = CStr::from_ptr(model_path).to_str()?;
+            let model_dir = PathBuf::from_str(path)?;
+            model = tract_onnx::onnx()
+                .model_for_path(model_dir, Some(params))?
+                .into_optimized()?
+                .into_runnable()?;
+        } else {
+            model = Box::from_raw(*inference_model).into_optimized()?.into_runnable()?
+        }
         let tokenizer_data = unsafe {
             slice::from_raw_parts(tokenizer_buffer, tokenizer_buffer_size)
         };
@@ -302,11 +342,6 @@ pub unsafe extern "C" fn tract_run_albert(
             .iter()
             .position(|&x| x == tokenizer.token_to_id("[MASK]").unwrap())
             .ok_or_else(|| anyhow::anyhow!("Mask token not found"))?;
-
-        let model = tract_onnx::onnx()
-            .model_for_path(model_dir, Some(params))?
-            .into_optimized()?
-            .into_runnable()?;
 
         let input_ids_tensor: Tensor = tract_ndarray::Array2::from_shape_vec(
             (1, length),
@@ -337,6 +372,128 @@ pub unsafe extern "C" fn tract_run_albert(
 
         // Handle the Option and create a CString
         let formatted_string = format!("Inference: {}", word.unwrap_or_else(|| "No word found".to_string()));
+        let c_word = CString::new(formatted_string)?;
+        *inference = c_word.into_raw(); // Pass the result back
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_run_gpt2(
+    model_path: *const c_char,
+    tokenizer_buffer: *const u8,
+    tokenizer_buffer_size: usize,
+    inference: *mut *mut c_char,
+    params: *const tract_core::framework::EncryptionParameters,
+    inference_model: *mut *mut MyInferenceModel
+) -> TRACT_RESULT  {
+    fn handle_error<T>(result: Result<T, anyhow::Error>) -> TRACT_RESULT {
+        match result {
+            Ok(_) => TRACT_RESULT::TRACT_RESULT_OK,
+            Err(_) => TRACT_RESULT::TRACT_RESULT_KO,
+        }
+    }
+
+    // Define the result to be returned
+    let result = (|| -> Result<(), anyhow::Error> {
+        let model;
+        if inference_model.is_null() {
+            let path = CStr::from_ptr(model_path).to_str()?;
+            let model_dir = PathBuf::from_str(path)?;
+            model = tract_onnx::onnx()
+                .model_for_path(model_dir, Some(params))?
+                .into_optimized()?
+                .into_runnable()?;
+        } else {
+            model = Box::from_raw(*inference_model).into_optimized()?.into_runnable()?
+        }
+        
+        let tokenizer_data = unsafe {
+            slice::from_raw_parts(tokenizer_buffer, tokenizer_buffer_size)
+        };
+
+        // Create the tokenizer from bytes
+        let tokenizer_result = Tokenizer::from_bytes(tokenizer_data);
+        let tokenizer = match tokenizer_result {
+            Ok(tokenizer) => tokenizer,
+            Err(_) => return Err(anyhow::anyhow!("Failed to read tokenizer")),
+        };
+
+        let prompt = "Hello, how are you today?";
+        
+        let tokenizer_output_result = tokenizer.encode(prompt, true);
+        let tokenizer_output = match tokenizer_output_result {
+            Ok(output) => output,
+            Err(_) => return Err(anyhow::anyhow!("Failed to encode text")),
+        };
+
+        let mut current_ids: Vec<u32> = tokenizer_output.get_ids().to_vec();
+        let mut current_attention_mask: Vec<u32> = tokenizer_output.get_attention_mask().to_vec();
+
+        let max_tokens = 30;
+        for _ in current_ids.len()..max_tokens {
+            let input_ids_tensor: Tensor = Array2::from_shape_vec(
+                (1, current_ids.len()),
+                current_ids.iter().map(|&x| x as i64).collect(),
+            )?.into();
+
+            let attention_mask_tensor: Tensor = Array2::from_shape_vec(
+                (1, current_attention_mask.len()),
+                current_attention_mask.iter().map(|&x| x as i64).collect(),
+            )?.into();
+
+            let outputs = model.run(tvec!(input_ids_tensor.into(), attention_mask_tensor.into()))?;
+            let logits = outputs[0].to_array_view::<f32>()?;
+            let last_logits = logits.slice(s![0, -1, ..]);
+
+            // Top-k sampling
+            let k = 10;
+            let mut scored: Vec<(usize, f32)> = last_logits
+                .iter()
+                .cloned()
+                .enumerate()
+                .collect();
+
+            scored.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+            let top_k = &scored[..k.min(scored.len())];
+            let next_token_id = top_k
+                .choose(&mut thread_rng())
+                .map(|(idx, _)| *idx)
+                .unwrap() as u32;
+
+            // Stop if model outputs <|endoftext|> token (50256 in GPT-2)
+            if next_token_id == 50256 {
+                break;
+            }
+
+            current_ids.push(next_token_id);
+            current_attention_mask.push(1);
+        }
+
+        let generated_text = tokenizer.decode(&current_ids, true).map_err(|e| {
+            anyhow::anyhow!("Failed to decode tokenizer output: {}", e)
+        })?;
+        
+        let sentence_regex = Regex::new(r"[^.!?]+[.!?]").unwrap();
+        let sentences: Vec<&str> = sentence_regex
+            .find_iter(&generated_text)
+            .map(|m| m.as_str().trim())
+            .take(2)
+            .collect();
+
+        let two_sentences = sentences.join(" ");
+
+        // Handle the Option and create a CString
+        let formatted_string = format!(
+            "Inference: {}",
+            if two_sentences.is_empty() {
+                "No word found".to_string()
+            } else {
+                two_sentences.clone()
+            }
+        );
         let c_word = CString::new(formatted_string)?;
         *inference = c_word.into_raw(); // Pass the result back
         Ok(())

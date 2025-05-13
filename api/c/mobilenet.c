@@ -73,8 +73,8 @@ free_predictions(prediction **inf, int length)
 prediction *
 inference(char *model_name, TractValue *input, TractValue *input2, prediction *inf, struct EncryptionParameters *params)
 {
-    struct timeval t1, t2;
-    double elapsedTime;
+    struct timeval t1_inf, t2_inf;
+    double elapsed_time;
 
     // Initialize onnx parser
     TractOnnx *onnx = NULL;
@@ -109,7 +109,7 @@ inference(char *model_name, TractValue *input, TractValue *input2, prediction *i
 
     TractValue* output = NULL;
 
-    gettimeofday(&t1, NULL);
+    gettimeofday(&t1_inf, NULL);
 
     // simple stateless run...
     TractValue *inputs[] = { input, input2 };
@@ -135,10 +135,10 @@ inference(char *model_name, TractValue *input, TractValue *input2, prediction *i
     fprintf(stderr, "\nModel: %s\nMax is %f for category %d\n", model_name, max, argmax);
 
     
-    gettimeofday(&t2, NULL);
-    elapsedTime = (t2.tv_sec - t1.tv_sec) * 1000.0;      // sec to ms
-    elapsedTime += (t2.tv_usec - t1.tv_usec) / 1000.0;   // us to ms
-    printf("Model run in %f ms.\n", elapsedTime);
+    gettimeofday(&t2_inf, NULL);
+    elapsed_time = (t2_inf.tv_sec - t1_inf.tv_sec) * 1000.0;      // sec to ms
+    elapsed_time += (t2_inf.tv_usec - t1_inf.tv_usec) / 1000.0;   // us to ms
+    printf("Model run in %f ms.\n", elapsed_time);
 
     inf->output = output;
     inf->pred = max;
@@ -282,6 +282,9 @@ main(int argc, char **argv)
         return 1;
     }
 
+    struct timeval t1_inf, t2_inf;
+    double elapsed_time;
+
     //test tract decryption
     EncryptionParameters *params = (EncryptionParameters *)malloc(sizeof(EncryptionParameters));
     if (!params) {
@@ -318,8 +321,9 @@ main(int argc, char **argv)
     fprintf(stderr, "\n");
     // end testing
 
-    if (strcmp(argv[1], "albert") == 0) {
-        char tag_message[] = "92e2e37cc8b8e7ef9ef7e2f74b5984fa";
+    if (strcmp(argv[2], "tokenizer.json") == 0) {
+        bool is_albert = strcmp(argv[1], "albert") == 0;
+        const char *tag_message = is_albert ? "14cbdb09a788fc7a52874ea3a6e0abdf" : "2dfe08aa3c1a9e3271a743981c7749bc";
         tag = (uint8_t *)malloc(TAG_BYTES * 2);
         if (!tag) {
             fprintf(stderr, "Memory allocation for tag failed\n");
@@ -338,12 +342,30 @@ main(int argc, char **argv)
         }
         fprintf(stderr, "\n");
 
-        char *model_for_path = "../../examples/pytorch-albert-v2/albert/encrypted_model.onnx";
-        char* inference = NULL;
-        int tokenizer_size = read_tokenizer("../../examples/pytorch-albert-v2/albert/tokenizer.json");
-        const uint8_t* tokenizer = write_to_buffer("../../examples/pytorch-albert-v2/albert/tokenizer.json");
-        check(tract_run_albert(model_for_path, tokenizer, tokenizer_size, &inference, params));
-        fprintf(stderr, "%s\n", inference);
+        char *model_for_path = is_albert ? "/hdd/papafrkon/dAIEdgeServer/models/albert-large-v2/albert-large-v2.onnx" : "/hdd/papafrkon/dAIEdgeServer/models/gpt2/gpt2.onnx";
+        char *tokenizer_path = is_albert ? "/hdd/papafrkon/dAIEdgeServer/models/albert-large-v2/tokenizer.json" : "/hdd/papafrkon/dAIEdgeServer/models/gpt2/tokenizer.json";
+        int tokenizer_size = read_tokenizer(tokenizer_path);
+        const uint8_t* tokenizer = write_to_buffer(tokenizer_path);
+       
+        char *inference = NULL;
+        MyInferenceModel *inference_models = NULL;
+
+#if USE_MEMORY_ONLY == 1        
+        tract_load_nlp_model(model_for_path, params, &inference_models);
+        assert(inference_models);
+#endif
+        gettimeofday(&t1_inf, NULL);
+        if (is_albert) {
+            tract_run_albert(model_for_path, tokenizer, tokenizer_size, &inference, params, inference_models ? &inference_models : NULL);
+        } else {
+            tract_run_gpt2(model_for_path, tokenizer, tokenizer_size, &inference, params, inference_models ? &inference_models : NULL);
+        }
+
+        gettimeofday(&t2_inf, NULL);
+        elapsed_time = (t2_inf.tv_sec - t1_inf.tv_sec) * 1000.0;      // sec to ms
+        elapsed_time += (t2_inf.tv_usec - t1_inf.tv_usec) / 1000.0;   // us to ms
+
+        fprintf(stderr, "%s\nInference time to run a model: %f ms\n", inference, elapsed_time);
 
         free(inference);
         free(tag);
