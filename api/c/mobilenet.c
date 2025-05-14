@@ -323,7 +323,7 @@ main(int argc, char **argv)
 
     if (strcmp(argv[2], "tokenizer.json") == 0) {
         bool is_albert = strcmp(argv[1], "albert") == 0;
-        const char *tag_message = is_albert ? "96aa0af6a8f5cd9fdacd9c083e89590a" : "cba6275ccf52e60a0687cbfa572096f2";
+        const char *tag_message = is_albert ? "96aa0af6a8f5cd9fdacd9c083e89590a" : "8696b1d05df54472d3af2e6629335c9a";
         tag = (uint8_t *)malloc(TAG_BYTES * 2);
         if (!tag) {
             fprintf(stderr, "Memory allocation for tag failed\n");
