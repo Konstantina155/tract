@@ -25,7 +25,7 @@ fn albert() -> Result<()> {
 
     let model = tract_onnx::onnx()
         .model_for_path(Path::join(&model_dir, "model.onnx"))?
-        .into_optimized()?
+        .into_typed()?
         .into_runnable()?;
 
     let input_ids: Tensor = tract_ndarray::Array2::from_shape_vec(
@@ -126,6 +126,5 @@ fn gpt2() -> Result<String> {
 
 fn main() -> Result<()> {
     albert()?;
-    gpt2()?;
     Ok(())
 }

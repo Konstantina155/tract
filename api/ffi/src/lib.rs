@@ -261,19 +261,39 @@ use tract_hir::internal::InferenceOp;
 
 /// Run the Albert example from the tract-onnx crate.
 /// The returned char must be freed with tract_free_cstring().
+fn handle_error<T>(result: Result<T, anyhow::Error>) -> TRACT_RESULT {
+    match result {
+        Ok(_) => {
+            LAST_ERROR.with(|msg| msg.replace(None));
+            TRACT_RESULT::TRACT_RESULT_OK
+        }
+        Err(err) => {
+            eprintln!("Rust error: {:?}", err);
+            let error_str = format!("{:?}", err);
+            match CString::new(error_str) {
+                Ok(c_msg) => {
+                    LAST_ERROR.with(|msg| {
+                        eprintln!("Storing error: {:?}", c_msg);
+                        msg.replace(Some(c_msg));
+                    });
+                }
+                Err(e) => {
+                    eprintln!("Failed to convert error to CString: {:?}", e);
+                    let fallback = CString::new("Error formatting failed").unwrap();
+                    LAST_ERROR.with(|msg| msg.replace(Some(fallback)));
+                }
+            }
+            TRACT_RESULT::TRACT_RESULT_KO
+        }
+    }
+}
+
 pub type MyInferenceModel = Graph<InferenceFact, Box<dyn InferenceOp>>;
 #[no_mangle]
 pub unsafe extern "C" fn tract_load_nlp_model(
     model_path: *const c_char,
     inference_model: *mut *mut MyInferenceModel
 ) -> TRACT_RESULT  {
-    fn handle_error<T>(result: Result<T, anyhow::Error>) -> TRACT_RESULT {
-        match result {
-            Ok(_) => TRACT_RESULT::TRACT_RESULT_OK,
-            Err(_) => TRACT_RESULT::TRACT_RESULT_KO,
-        }
-    }
-
     // Define the result to be returned
     let result = (|| -> Result<(), anyhow::Error> {
         let path = CStr::from_ptr(model_path).to_str()?;
@@ -294,26 +314,8 @@ pub unsafe extern "C" fn tract_run_albert(
     inference: *mut *mut c_char,
     inference_model: *mut *mut MyInferenceModel
 ) -> TRACT_RESULT  {
-    fn handle_error<T>(result: Result<T, anyhow::Error>) -> TRACT_RESULT {
-        match result {
-            Ok(_) => TRACT_RESULT::TRACT_RESULT_OK,
-            Err(_) => TRACT_RESULT::TRACT_RESULT_KO,
-        }
-    }
-
     // Define the result to be returned
     let result = (|| -> Result<(), anyhow::Error> {
-        let model;
-        if inference_model.is_null() {
-            let path = CStr::from_ptr(model_path).to_str()?;
-            let model_dir = PathBuf::from_str(path)?;
-            model = tract_onnx::onnx()
-                .model_for_path(model_dir)?
-                .into_optimized()?
-                .into_runnable()?;
-        } else {
-            model = Box::from_raw(*inference_model).into_optimized()?.into_runnable()?
-        }
         let tokenizer_data = unsafe {
             slice::from_raw_parts(tokenizer_buffer, tokenizer_buffer_size)
         };
@@ -357,6 +359,27 @@ pub unsafe extern "C" fn tract_run_albert(
         )?
         .into();
 
+        let model;
+        let shape = [1, length];
+        if inference_model.is_null() {
+            let path = CStr::from_ptr(model_path).to_str()?;
+            let model_dir = PathBuf::from_str(path)?;
+            model = tract_onnx::onnx().model_for_path(model_dir)?
+                .with_input_fact(0, i64::fact(shape).into())?
+                .with_input_fact(1, i64::fact(shape).into())?
+                .with_input_fact(2, i64::fact(shape).into())?
+                .into_typed()?
+                .into_runnable()?;
+
+        } else {
+            model = Box::from_raw(*inference_model)
+                .with_input_fact(0, i64::fact(shape).into())?
+                .with_input_fact(1, i64::fact(shape).into())?
+                .with_input_fact(2, i64::fact(shape).into())?
+                .into_typed()?
+                .into_runnable()?;
+        }
+
         let outputs = model.run(tvec!(input_ids_tensor.into(), attention_mask_tensor.into(), token_type_ids_tensor.into()))?;
         let logits = outputs[0].to_array_view::<f32>()?;
         let logits = logits.slice(s![0, mask_pos, ..]);
@@ -386,27 +409,8 @@ pub unsafe extern "C" fn tract_run_gpt2(
     inference: *mut *mut c_char,
     inference_model: *mut *mut MyInferenceModel
 ) -> TRACT_RESULT  {
-    fn handle_error<T>(result: Result<T, anyhow::Error>) -> TRACT_RESULT {
-        match result {
-            Ok(_) => TRACT_RESULT::TRACT_RESULT_OK,
-            Err(_) => TRACT_RESULT::TRACT_RESULT_KO,
-        }
-    }
-
     // Define the result to be returned
     let result = (|| -> Result<(), anyhow::Error> {
-        let model;
-        if inference_model.is_null() {
-            let path = CStr::from_ptr(model_path).to_str()?;
-            let model_dir = PathBuf::from_str(path)?;
-            model = tract_onnx::onnx()
-                .model_for_path(model_dir)?
-                .into_optimized()?
-                .into_runnable()?;
-        } else {
-            model = Box::from_raw(*inference_model).into_optimized()?.into_runnable()?
-        }
-        
         let tokenizer_data = unsafe {
             slice::from_raw_parts(tokenizer_buffer, tokenizer_buffer_size)
         };
@@ -428,16 +432,37 @@ pub unsafe extern "C" fn tract_run_gpt2(
 
         let mut current_ids: Vec<u32> = tokenizer_output.get_ids().to_vec();
         let mut current_attention_mask: Vec<u32> = tokenizer_output.get_attention_mask().to_vec();
-
+        let length = current_ids.len();
         let max_tokens = 30;
-        for _ in current_ids.len()..max_tokens {
+
+        let model;
+        let shape = [1, length];
+        if inference_model.is_null() {
+            let path = CStr::from_ptr(model_path).to_str()?;
+            let model_dir = PathBuf::from_str(path)?;
+            model = tract_onnx::onnx().model_for_path(model_dir)?
+                .with_input_fact(0, i64::fact(shape).into())?
+                .with_input_fact(1, i64::fact(shape).into())?
+                .with_input_fact(2, i64::fact(shape).into())?
+                .into_typed()?
+                .into_runnable()?;
+
+        } else {
+            model = Box::from_raw(*inference_model)
+                .with_input_fact(0, i64::fact(shape).into())?
+                .with_input_fact(1, i64::fact(shape).into())?
+                .with_input_fact(2, i64::fact(shape).into())?
+                .into_typed()?
+                .into_runnable()?;
+        }
+        for _ in length..max_tokens {
             let input_ids_tensor: Tensor = Array2::from_shape_vec(
-                (1, current_ids.len()),
+                (1, length),
                 current_ids.iter().map(|&x| x as i64).collect(),
             )?.into();
 
             let attention_mask_tensor: Tensor = Array2::from_shape_vec(
-                (1, current_attention_mask.len()),
+                (1, length),
                 current_attention_mask.iter().map(|&x| x as i64).collect(),
             )?.into();
 
@@ -755,6 +780,7 @@ pub unsafe extern "C" fn tract_inference_model_into_typed(
     typed: *mut *mut TractModel,
 ) -> TRACT_RESULT {
     wrap(|| unsafe {
+        println!("here");
         check_not_null!(model, *model, typed);
         let model_arc = Arc::from_raw(*model);
         let cloned_model_arc = model_arc.clone();

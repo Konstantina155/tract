@@ -227,13 +227,31 @@ main(int argc, char **argv)
         return 1;
     }
 
-    if (strcmp(argv[1], "albert") == 0) {
-        char *model_for_path = "/hdd/papafrkon/dAIEdgeServer/models/albert-large-v2/albert-large-v2.onnx";
-        char* inference = NULL;
-        int tokenizer_size = read_tokenizer("/hdd/papafrkon/dAIEdgeServer/models/albert-large-v2/tokenizer.json");
-        const uint8_t* tokenizer = write_to_buffer("/hdd/papafrkon/dAIEdgeServer/models/albert-large-v2/tokenizer.json");
-        check(tract_run_albert(model_for_path, tokenizer, tokenizer_size, &inference, NULL));
-        fprintf(stderr, "%s\n", inference);
+    struct timeval t1_inf, t2_inf;
+    double elapsed_time;
+    
+    if (strcmp(argv[2], "tokenizer.json") == 0) {
+        bool is_albert = strcmp(argv[1], "albert") == 0;
+        char *model_for_path = is_albert ? "/hdd/papafrkon/albert-base-v2/albert-base-v2.onnx" : "/hdd/papafrkon/dAIEdgeServer/models/gpt2/gpt2.onnx";
+        char *tokenizer_path = is_albert ? "/hdd/papafrkon/dAIEdgeServer/models/albert-large-v2/test_data_set_0/tokenizer.json" : "/hdd/papafrkon/dAIEdgeServer/models/gpt2/test_data_set_0/tokenizer.json";
+        int tokenizer_size = read_tokenizer(tokenizer_path);
+        const uint8_t* tokenizer = write_to_buffer(tokenizer_path);
+       
+        char *inference = NULL;
+
+        gettimeofday(&t1_inf, NULL);
+        if (is_albert) {
+            tract_run_albert(model_for_path, tokenizer, tokenizer_size, &inference, NULL);
+        } else {
+            tract_run_gpt2(model_for_path, tokenizer, tokenizer_size, &inference, NULL);
+        }
+
+        gettimeofday(&t2_inf, NULL);
+        elapsed_time = (t2_inf.tv_sec - t1_inf.tv_sec) * 1000.0;      // sec to ms
+        elapsed_time += (t2_inf.tv_usec - t1_inf.tv_usec) / 1000.0;   // us to ms
+
+        fprintf(stderr, "%s\nInference time to run a model: %f ms\n", inference, elapsed_time);
+
         tract_free_cstring(inference);
         return 0;
     }
