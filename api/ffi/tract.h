@@ -48,10 +48,6 @@ typedef enum TRACT_RESULT {
   TRACT_RESULT_KO = 1,
 } TRACT_RESULT;
 
-/**
- * Run the Albert example from the tract-onnx crate.
- * The returned char must be freed with tract_free_cstring().
- */
 typedef struct MyInferenceModel MyInferenceModel;
 
 typedef struct TractFact TractFact;

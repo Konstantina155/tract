@@ -323,7 +323,7 @@ main(int argc, char **argv)
 
     if (strcmp(argv[2], "tokenizer.json") == 0) {
         bool is_albert = strcmp(argv[1], "albert") == 0;
-        const char *tag_message = is_albert ? "14cbdb09a788fc7a52874ea3a6e0abdf" : "c317c2b07a75e5b9a72afba71de051e5";
+        const char *tag_message = is_albert ? "3b7bf9d43323cde2ff24301135387a61" : "c317c2b07a75e5b9a72afba71de051e5";
         tag = (uint8_t *)malloc(TAG_BYTES * 2);
         if (!tag) {
             fprintf(stderr, "Memory allocation for tag failed\n");
@@ -342,7 +342,7 @@ main(int argc, char **argv)
         }
         fprintf(stderr, "\n");
 
-        char *model_for_path = is_albert ? "/hdd/papafrkon/dAIEdgeServer/models/albert-large-v2/albert-large-v2.onnx" : "/hdd/papafrkon/dAIEdgeServer/models/gpt2/gpt2.onnx";
+        char *model_for_path = is_albert ? "/hdd/papafrkon/albert-base-v2/albert-base-v2.onnx" : "/hdd/papafrkon/dAIEdgeServer/models/gpt2/gpt2.onnx";
         char *tokenizer_path = is_albert ? "/hdd/papafrkon/dAIEdgeServer/models/albert-large-v2/test_data_set_0/tokenizer.json" : "/hdd/papafrkon/dAIEdgeServer/models/gpt2/test_data_set_0/tokenizer.json";
         int tokenizer_size = read_tokenizer(tokenizer_path);
         const uint8_t* tokenizer = write_to_buffer(tokenizer_path);
