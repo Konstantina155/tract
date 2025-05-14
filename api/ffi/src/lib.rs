@@ -318,6 +318,18 @@ pub unsafe extern "C" fn tract_run_albert(
 ) -> TRACT_RESULT  {
     // Define the result to be returned
     let result = (|| -> Result<(), anyhow::Error> {
+        let model;
+        if inference_model.is_null() {
+            let path = CStr::from_ptr(model_path).to_str()?;
+            let model_dir = PathBuf::from_str(path)?;
+            model = tract_onnx::onnx()
+                .model_for_path(model_dir, Some(params))?
+                .into_optimized()?
+                .into_runnable()?;
+        } else {
+            model = Box::from_raw(*inference_model).into_optimized()?.into_runnable()?
+        }
+
         let tokenizer_data = unsafe {
             slice::from_raw_parts(tokenizer_buffer, tokenizer_buffer_size)
         };
@@ -361,27 +373,6 @@ pub unsafe extern "C" fn tract_run_albert(
         )?
         .into();
 
-        let model;
-        let shape = [1, length];
-        if inference_model.is_null() {
-            let path = CStr::from_ptr(model_path).to_str()?;
-            let model_dir = PathBuf::from_str(path)?;
-            model = tract_onnx::onnx().model_for_path(model_dir, Some(params))?
-                .with_input_fact(0, i64::fact(shape).into())?
-                .with_input_fact(1, i64::fact(shape).into())?
-                .with_input_fact(2, i64::fact(shape).into())?
-                .into_typed()?
-                .into_runnable()?;
-
-        } else {
-            model = Box::from_raw(*inference_model)
-                .with_input_fact(0, i64::fact(shape).into())?
-                .with_input_fact(1, i64::fact(shape).into())?
-                .with_input_fact(2, i64::fact(shape).into())?
-                .into_typed()?
-                .into_runnable()?;
-        }
-
         let outputs = model.run(tvec!(input_ids_tensor.into(), attention_mask_tensor.into(), token_type_ids_tensor.into()))?;
         let logits = outputs[0].to_array_view::<f32>()?;
         let logits = logits.slice(s![0, mask_pos, ..]);
@@ -412,8 +403,27 @@ pub unsafe extern "C" fn tract_run_gpt2(
     params: *const tract_core::framework::EncryptionParameters,
     inference_model: *mut *mut MyInferenceModel
 ) -> TRACT_RESULT  {
+    fn handle_error<T>(result: Result<T, anyhow::Error>) -> TRACT_RESULT {
+        match result {
+            Ok(_) => TRACT_RESULT::TRACT_RESULT_OK,
+            Err(_) => TRACT_RESULT::TRACT_RESULT_KO,
+        }
+    }
+
     // Define the result to be returned
-    let result = (|| -> Result<(), anyhow::Error> {   
+    let result = (|| -> Result<(), anyhow::Error> {
+        let model;
+        if inference_model.is_null() {
+            let path = CStr::from_ptr(model_path).to_str()?;
+            let model_dir = PathBuf::from_str(path)?;
+            model = tract_onnx::onnx()
+                .model_for_path(model_dir, Some(params))?
+                .into_optimized()?
+                .into_runnable()?;
+        } else {
+            model = Box::from_raw(*inference_model).into_optimized()?.into_runnable()?
+        }
+        
         let tokenizer_data = unsafe {
             slice::from_raw_parts(tokenizer_buffer, tokenizer_buffer_size)
         };
@@ -435,38 +445,16 @@ pub unsafe extern "C" fn tract_run_gpt2(
 
         let mut current_ids: Vec<u32> = tokenizer_output.get_ids().to_vec();
         let mut current_attention_mask: Vec<u32> = tokenizer_output.get_attention_mask().to_vec();
-        let length = current_ids.len();
+
         let max_tokens = 30;
-
-        let model;
-        let shape = [1, length];
-        if inference_model.is_null() {
-            let path = CStr::from_ptr(model_path).to_str()?;
-            let model_dir = PathBuf::from_str(path)?;
-            model = tract_onnx::onnx().model_for_path(model_dir, Some(params))?
-                .with_input_fact(0, i64::fact(shape).into())?
-                .with_input_fact(1, i64::fact(shape).into())?
-                .with_input_fact(2, i64::fact(shape).into())?
-                .into_typed()?
-                .into_runnable()?;
-
-        } else {
-            model = Box::from_raw(*inference_model)
-                .with_input_fact(0, i64::fact(shape).into())?
-                .with_input_fact(1, i64::fact(shape).into())?
-                .with_input_fact(2, i64::fact(shape).into())?
-                .into_typed()?
-                .into_runnable()?;
-        }
-
-        for _ in length..max_tokens {
+        for _ in current_ids.len()..max_tokens {
             let input_ids_tensor: Tensor = Array2::from_shape_vec(
-                (1, length),
+                (1, current_ids.len()),
                 current_ids.iter().map(|&x| x as i64).collect(),
             )?.into();
 
             let attention_mask_tensor: Tensor = Array2::from_shape_vec(
-                (1, length),
+                (1, current_attention_mask.len()),
                 current_attention_mask.iter().map(|&x| x as i64).collect(),
             )?.into();
 
