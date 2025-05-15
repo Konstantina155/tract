@@ -243,7 +243,7 @@ main(int argc, char **argv)
         if (is_albert) {
             tract_run_albert(model_for_path, tokenizer, tokenizer_size, &inference, NULL);
         } else {
-            tract_run_gpt2(model_for_path, tokenizer, tokenizer_size, &inference, NULL);
+            tract_run_gpt2(model_for_path, tokenizer, tokenizer_size, &inference, 30, NULL);
         }
 
         gettimeofday(&t2_inf, NULL);
