@@ -250,7 +250,7 @@ main(int argc, char **argv)
         elapsed_time = (t2_inf.tv_sec - t1_inf.tv_sec) * 1000.0;      // sec to ms
         elapsed_time += (t2_inf.tv_usec - t1_inf.tv_usec) / 1000.0;   // us to ms
 
-        fprintf(stderr, "%s\nInference time to run a model: %f ms\n", inference, elapsed_time);
+        fprintf(stderr, "%s\n%ld\nInference time to run a model: %f ms\n", inference, strlen(inference), elapsed_time);
 
         tract_free_cstring(inference);
         return 0;

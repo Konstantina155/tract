@@ -256,7 +256,6 @@ use tokenizers::tokenizer::{Tokenizer};
 use tract_onnx::prelude::*;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
-use regex::Regex;
 use tract_hir::internal::InferenceOp;
 
 /// Run the Albert example from the tract-onnx crate.
@@ -411,7 +410,13 @@ pub unsafe extern "C" fn tract_run_albert(
         let word = tokenizer.id_to_token(word_id);
 
         // Handle the Option and create a CString
-        let formatted_string = format!("Inference: {}", word.unwrap_or_else(|| "No word found".to_string()));
+        let re = regex::Regex::new(r"\s+")
+            .map_err(|e| anyhow::anyhow!("Failed to compile regex: {}", e))?;
+        let clean_string = match word {
+            Some(word) => re.replace_all(word.trim(), " ").to_string(),
+            None => "No word found".to_string(),
+        };
+        let formatted_string = format!("Inference: {}", clean_string);
         let c_word = CString::new(formatted_string)?;
         *inference = c_word.into_raw(); // Pass the result back
         Ok(())
@@ -531,29 +536,15 @@ pub unsafe extern "C" fn tract_run_gpt2(
         let generated_text = tokenizer.decode(&current_ids, true).map_err(|e| {
             anyhow::anyhow!("Failed to decode tokenizer output: {}", e)
         })?;
-        let sentence_regex = Regex::new(r"[^.!?]+[.!?]").unwrap();
-        let sentences: Vec<&str> = sentence_regex
-            .find_iter(&generated_text)
-            .map(|m| m.as_str().trim())
-            .take(2)
-            .collect();
-        let two_sentences = sentences.join(" ");
-
+        
         // Handle the Option and create a CString
-        let formatted_string = format!(
-            "Inference: {}",
-            if two_sentences.is_empty() {
-                "No word found".to_string()
-            } else {
-                two_sentences.clone()
-            }
-        );
-
-
+        let re = regex::Regex::new(r"\s+")
+            .map_err(|e| anyhow::anyhow!("Failed to compile regex: {}", e))?;
+        let clean_string = re.replace_all(generated_text.trim(), " ").to_string();
+        let formatted_string = format!("Inference: {}", clean_string);
         let c_word = CString::new(formatted_string)?;
         *inference = c_word.into_raw(); // Pass the result back
         Ok(())
-
     })();
 
     handle_error(result)
