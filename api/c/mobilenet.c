@@ -358,7 +358,7 @@ main(int argc, char **argv)
         if (is_albert) {
             tract_run_albert(model_for_path, tokenizer, tokenizer_size, &inference, params, inference_models ? &inference_models : NULL);
         } else {
-            tract_run_gpt2(model_for_path, tokenizer, tokenizer_size, &inference, params, inference_models ? &inference_models : NULL);
+            tract_run_gpt2(model_for_path, tokenizer, tokenizer_size, &inference, params, 30, inference_models ? &inference_models : NULL);
         }
 
         gettimeofday(&t2_inf, NULL);

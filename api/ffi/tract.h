@@ -172,6 +172,7 @@ enum TRACT_RESULT tract_run_gpt2(const char *model_path,
                                  uintptr_t tokenizer_buffer_size,
                                  char **inference,
                                  const EncryptionParameters *params,
+                                 uintptr_t num_tokens,
                                  struct MyInferenceModel **inference_model);
 
 /**

@@ -142,7 +142,6 @@ where
     _phantom: PhantomData<(M, F, O)>,
 }
 
-use std::time::Instant;
 impl<F, O, M, P> SimpleState<F, O, M, P>
 where
     F: Fact + Clone + 'static,
@@ -243,12 +242,8 @@ where
             let model = plan.model();
             for (step, n) in plan.order.iter().enumerate() {
                 // Inside Running step {}, node {}", step, node);
-                let mut start_time: Option<Instant> = None;
-
                 #[cfg(feature = "use_sys_time")]
-                {
-                    start_time = Some(Instant::now());
-                }
+                let start_time = std::time::Instant::now();
 
                 let node = model.node(*n);
                 
@@ -351,10 +346,8 @@ where
                 
                 #[cfg(feature = "use_sys_time")]
                 {
-                    if let Some(start_time) = start_time {
-                        let elapsed = start_time.elapsed().as_secs_f64() * 1000.0;
-                        println!("     takes {:.4} ms", elapsed);
-                    }
+                    let elapsed = start_time.elapsed().as_secs_f64() * 1000.0;
+                    println!("     takes {:.4} ms", elapsed);
                 }
             }    
         }

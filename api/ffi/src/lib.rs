@@ -256,7 +256,6 @@ use tokenizers::tokenizer::{Tokenizer};
 use tract_onnx::prelude::*;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
-use regex::Regex;
 use tract_hir::internal::InferenceOp;
 
 /// Run the Albert example from the tract-onnx crate.
@@ -318,18 +317,6 @@ pub unsafe extern "C" fn tract_run_albert(
 ) -> TRACT_RESULT  {
     // Define the result to be returned
     let result = (|| -> Result<(), anyhow::Error> {
-        let model;
-        if inference_model.is_null() {
-            let path = CStr::from_ptr(model_path).to_str()?;
-            let model_dir = PathBuf::from_str(path)?;
-            model = tract_onnx::onnx()
-                .model_for_path(model_dir, Some(params))?
-                .into_optimized()?
-                .into_runnable()?;
-        } else {
-            model = Box::from_raw(*inference_model).into_optimized()?.into_runnable()?
-        }
-
         let tokenizer_data = unsafe {
             slice::from_raw_parts(tokenizer_buffer, tokenizer_buffer_size)
         };
@@ -352,6 +339,47 @@ pub unsafe extern "C" fn tract_run_albert(
         let attention_mask = tokenizer_output.get_attention_mask();
         let token_type_ids = tokenizer_output.get_type_ids();
         let length = input_ids.len();
+        
+
+        let model = {
+            #[cfg(feature = "use_sys_time")]
+            {
+                let shape = [1, length];
+                if inference_model.is_null() {
+                    let path = CStr::from_ptr(model_path).to_str()?;
+                    let model_dir = PathBuf::from_str(path)?;
+                    tract_onnx::onnx().model_for_path(model_dir, Some(params))?
+                        .with_input_fact(0, i64::fact(shape).into())?
+                        .with_input_fact(1, i64::fact(shape).into())?
+                        .with_input_fact(2, i64::fact(shape).into())?
+                        .into_typed()?
+                        .into_runnable()?
+                } else {
+                    Box::from_raw(*inference_model)
+                        .with_input_fact(0, i64::fact(shape).into())?
+                        .with_input_fact(1, i64::fact(shape).into())?
+                        .with_input_fact(2, i64::fact(shape).into())?
+                        .into_typed()?
+                        .into_runnable()?
+                }
+            }
+
+            #[cfg(not(feature = "use_sys_time"))]
+            {
+                if inference_model.is_null() {
+                    let path = CStr::from_ptr(model_path).to_str()?;
+                    let model_dir = PathBuf::from_str(path)?;
+                    tract_onnx::onnx().model_for_path(model_dir, Some(params))?
+                        .into_optimized()?
+                        .into_runnable()?
+                } else {
+                    Box::from_raw(*inference_model)
+                        .into_optimized()?
+                        .into_runnable()?
+                }
+            }
+        };
+
         let mask_pos = input_ids
             .iter()
             .position(|&x| x == tokenizer.token_to_id("[MASK]").unwrap())
@@ -385,7 +413,13 @@ pub unsafe extern "C" fn tract_run_albert(
         let word = tokenizer.id_to_token(word_id);
 
         // Handle the Option and create a CString
-        let formatted_string = format!("Inference: {}", word.unwrap_or_else(|| "No word found".to_string()));
+        let re = regex::Regex::new(r"\s+")
+            .map_err(|e| anyhow::anyhow!("Failed to compile regex: {}", e))?;
+        let clean_string = match word {
+            Some(word) => re.replace_all(word.trim(), " ").to_string(),
+            None => "No word found".to_string(),
+        };
+        let formatted_string = format!("Inference: {}", clean_string);
         let c_word = CString::new(formatted_string)?;
         *inference = c_word.into_raw(); // Pass the result back
         Ok(())
@@ -401,29 +435,11 @@ pub unsafe extern "C" fn tract_run_gpt2(
     tokenizer_buffer_size: usize,
     inference: *mut *mut c_char,
     params: *const tract_core::framework::EncryptionParameters,
+    num_tokens: usize,
     inference_model: *mut *mut MyInferenceModel
 ) -> TRACT_RESULT  {
-    fn handle_error<T>(result: Result<T, anyhow::Error>) -> TRACT_RESULT {
-        match result {
-            Ok(_) => TRACT_RESULT::TRACT_RESULT_OK,
-            Err(_) => TRACT_RESULT::TRACT_RESULT_KO,
-        }
-    }
-
     // Define the result to be returned
-    let result = (|| -> Result<(), anyhow::Error> {
-        let model;
-        if inference_model.is_null() {
-            let path = CStr::from_ptr(model_path).to_str()?;
-            let model_dir = PathBuf::from_str(path)?;
-            model = tract_onnx::onnx()
-                .model_for_path(model_dir, Some(params))?
-                .into_optimized()?
-                .into_runnable()?;
-        } else {
-            model = Box::from_raw(*inference_model).into_optimized()?.into_runnable()?
-        }
-        
+    let result = (|| -> Result<(), anyhow::Error> {  
         let tokenizer_data = unsafe {
             slice::from_raw_parts(tokenizer_buffer, tokenizer_buffer_size)
         };
@@ -446,8 +462,43 @@ pub unsafe extern "C" fn tract_run_gpt2(
         let mut current_ids: Vec<u32> = tokenizer_output.get_ids().to_vec();
         let mut current_attention_mask: Vec<u32> = tokenizer_output.get_attention_mask().to_vec();
 
-        let max_tokens = 30;
-        for _ in current_ids.len()..max_tokens {
+        let model = {
+            #[cfg(feature = "use_sys_time")]
+            {
+                let shape_input_ids = [1, current_ids.len()];
+                let shape_attention_mask = [1, current_attention_mask.len()];
+                if inference_model.is_null() {
+                    let path = CStr::from_ptr(model_path).to_str()?;
+                    let model_dir = PathBuf::from_str(path)?;
+                    tract_onnx::onnx().model_for_path(model_dir, Some(params))?
+                        .with_input_fact(0, i64::fact(shape_input_ids).into())?
+                        .with_input_fact(1, i64::fact(shape_attention_mask).into())?
+                        .into_typed()?
+                        .into_runnable()?
+                } else {
+                    Box::from_raw(*inference_model)
+                        .with_input_fact(0, i64::fact(shape_input_ids).into())?
+                        .with_input_fact(1, i64::fact(shape_attention_mask).into())?
+                        .into_typed()?
+                        .into_runnable()?
+                }
+            }
+
+            #[cfg(not(feature = "use_sys_time"))]
+            {
+                if inference_model.is_null() {
+                    let path = CStr::from_ptr(model_path).to_str()?;
+                    let model_dir = PathBuf::from_str(path)?;
+                    tract_onnx::onnx().model_for_path(model_dir, Some(params))?
+                        .into_optimized()?
+                        .into_runnable()?
+                } else {
+                    Box::from_raw(*inference_model).into_optimized()?.into_runnable()?
+                }
+            }
+        };
+
+        for _ in current_ids.len()..num_tokens {
             let input_ids_tensor: Tensor = Array2::from_shape_vec(
                 (1, current_ids.len()),
                 current_ids.iter().map(|&x| x as i64).collect(),
@@ -489,25 +540,12 @@ pub unsafe extern "C" fn tract_run_gpt2(
         let generated_text = tokenizer.decode(&current_ids, true).map_err(|e| {
             anyhow::anyhow!("Failed to decode tokenizer output: {}", e)
         })?;
-        
-        let sentence_regex = Regex::new(r"[^.!?]+[.!?]").unwrap();
-        let sentences: Vec<&str> = sentence_regex
-            .find_iter(&generated_text)
-            .map(|m| m.as_str().trim())
-            .take(2)
-            .collect();
-
-        let two_sentences = sentences.join(" ");
 
         // Handle the Option and create a CString
-        let formatted_string = format!(
-            "Inference: {}",
-            if two_sentences.is_empty() {
-                "No word found".to_string()
-            } else {
-                two_sentences.clone()
-            }
-        );
+        let re = regex::Regex::new(r"\s+")
+            .map_err(|e| anyhow::anyhow!("Failed to compile regex: {}", e))?;
+        let clean_string = re.replace_all(generated_text.trim(), " ").to_string();
+        let formatted_string = format!("Inference: {}", clean_string);
         let c_word = CString::new(formatted_string)?;
         *inference = c_word.into_raw(); // Pass the result back
         Ok(())
