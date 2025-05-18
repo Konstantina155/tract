@@ -8,9 +8,10 @@ use tract_onnx::prelude::*;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use regex::Regex;
+use sentencepiece::SentencePieceProcessor;
 
-fn albert() -> Result<()> {
-    let model_dir = PathBuf::from_str("./albert")?;
+fn albert(model_path: &str) -> Result<()> {
+    let model_dir = PathBuf::from_str(model_path)?;
     let tokenizer = Tokenizer::from_file(Path::join(&model_dir, "tokenizer.json"))?;
 
     let text = "Paris is the [MASK] of France.";
@@ -25,7 +26,7 @@ fn albert() -> Result<()> {
 
     let model = tract_onnx::onnx()
         .model_for_path(Path::join(&model_dir, "model.onnx"))?
-        .into_typed()?
+        .into_optimized()?
         .into_runnable()?;
 
     let input_ids: Tensor = tract_ndarray::Array2::from_shape_vec(
@@ -50,13 +51,13 @@ fn albert() -> Result<()> {
     let logits = logits.slice(s![0, mask_pos, ..]);
     let word_id = logits.iter().zip(0..).max_by(|a, b| a.0.partial_cmp(b.0).unwrap()).unwrap().1;
     let word = tokenizer.id_to_token(word_id);
-    println!("Result: {word:?}");
+    println!("Albert: {word:?}");
 
    Ok(())
 }
 
-fn gpt2() -> Result<String> {
-    let model_dir = PathBuf::from_str("./gpt2")?;
+fn gpt2(model_path: &str) -> Result<String> {
+    let model_dir = PathBuf::from_str(model_path)?;
     let tokenizer = Tokenizer::from_file(model_dir.join("tokenizer.json"))?;
 
     let model = tract_onnx::onnx()
@@ -70,7 +71,7 @@ fn gpt2() -> Result<String> {
     let mut current_ids: Vec<u32> = tokenizer_output.get_ids().to_vec();
     let mut current_attention_mask: Vec<u32> = tokenizer_output.get_attention_mask().to_vec();
 
-    let max_tokens = 70;
+    let max_tokens = 30;
     for _ in current_ids.len()..max_tokens {
         let input_ids_tensor: Tensor = Array2::from_shape_vec(
             (1, current_ids.len()),
@@ -120,11 +121,94 @@ fn gpt2() -> Result<String> {
     .collect();
 
     let two_sentences = sentences.join(" ");
-    println!("Generated text: {}", two_sentences);
+    println!("GPT2: {}", two_sentences);
+    Ok(two_sentences)
+}
+
+fn latest_models(model_path: &str) -> Result<String> {
+    let model_dir = PathBuf::from_str(model_path)?;
+    let tokenizer = Tokenizer::from_file(model_dir.join("tokenizer.json"))?;
+
+    let model = tract_onnx::onnx()
+        .model_for_path(model_dir.join("model.onnx"))?
+        .into_optimized()?
+        .into_runnable()?;
+
+    let prompt = "Hello, how are you today?";
+
+    let tokenizer_output = tokenizer.encode(prompt, true)?;
+    let mut current_ids: Vec<u32> = tokenizer_output.get_ids().to_vec();
+    let mut current_attention_mask: Vec<u32> = tokenizer_output.get_attention_mask().to_vec();
+    let mut current_position_ids: Vec<u32> = (0..current_ids.len() as u32).collect();
+
+    let max_tokens = 30;
+    for _ in current_ids.len()..max_tokens {
+        let input_ids_tensor: Tensor = Array2::from_shape_vec(
+            (1, current_ids.len()),
+            current_ids.iter().map(|&x| x as i64).collect(),
+        )?.into();
+
+        let attention_mask_tensor: Tensor = Array2::from_shape_vec(
+            (1, current_attention_mask.len()),
+            current_attention_mask.iter().map(|&x| x as i64).collect(),
+        )?.into();
+
+        let position_ids_tensor: Tensor = Array2::from_shape_vec(
+            (1, current_position_ids.len()),
+            current_position_ids.iter().map(|&x| x as i64).collect(),
+        )?.into();
+
+        let outputs = model.run(tvec!(input_ids_tensor.into(), attention_mask_tensor.into(), position_ids_tensor.into()))?;
+        let logits = outputs[0].to_array_view::<f32>()?;
+        let last_logits = logits.slice(s![0, -1, ..]);
+
+        // Top-k sampling
+        let k = 10;
+        let mut scored: Vec<(usize, f32)> = last_logits
+            .iter()
+            .cloned()
+            .enumerate()
+            .collect();
+
+        scored.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        let top_k = &scored[..k.min(scored.len())];
+        let next_token_id = top_k
+            .choose(&mut thread_rng())
+            .map(|(idx, _)| *idx)
+            .unwrap() as u32;
+
+        // Stop if model outputs <|endoftext|> token (50256 in GPT-2)
+        if next_token_id == 50256 {
+            break;
+        }
+
+        current_ids.push(next_token_id);
+        current_attention_mask.push(1);
+        current_position_ids.push(current_position_ids.last().unwrap() + 1);
+    }
+
+    let generated_text = tokenizer.decode(&current_ids, true)?;
+    
+    let sentence_regex = Regex::new(r"[^.!?]+[.!?]").unwrap();
+    let sentences: Vec<&str> = sentence_regex
+    .find_iter(&generated_text)
+    .map(|m| m.as_str().trim())
+    .take(3)
+    .collect();
+
+    let two_sentences = sentences.join(" ");
+    let name: &str = Path::new(model_path)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .expect("Invalid path or non-UTF8 filename");
+    println!("{}: {}", name, two_sentences);
     Ok(two_sentences)
 }
 
 fn main() -> Result<()> {
-    albert()?;
+    latest_models("./cerebras-gpt")?;
+    latest_models("./qwen2")?;
+    latest_models("./llama")?;
+    latest_models("./deepseek")?;
     Ok(())
 }

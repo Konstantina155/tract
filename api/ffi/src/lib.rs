@@ -292,7 +292,7 @@ pub type MyInferenceModel = Graph<InferenceFact, Box<dyn InferenceOp>>;
 pub unsafe extern "C" fn tract_load_nlp_model(
     model_path: *const c_char,
     inference_model: *mut *mut MyInferenceModel
-) -> TRACT_RESULT  {
+) -> TRACT_RESULT {
     // Define the result to be returned
     let result = (|| -> Result<(), anyhow::Error> {
         let path = CStr::from_ptr(model_path).to_str()?;
@@ -312,7 +312,7 @@ pub unsafe extern "C" fn tract_run_albert(
     tokenizer_buffer_size: usize,
     inference: *mut *mut c_char,
     inference_model: *mut *mut MyInferenceModel
-) -> TRACT_RESULT  {
+) -> TRACT_RESULT {
     // Define the result to be returned
     let result = (|| -> Result<(), anyhow::Error> {
         let tokenizer_data = unsafe {
@@ -531,6 +531,142 @@ pub unsafe extern "C" fn tract_run_gpt2(
 
             current_ids.push(next_token_id);
             current_attention_mask.push(1);
+        }
+
+        let generated_text = tokenizer.decode(&current_ids, true).map_err(|e| {
+            anyhow::anyhow!("Failed to decode tokenizer output: {}", e)
+        })?;
+        
+        // Handle the Option and create a CString
+        let re = regex::Regex::new(r"\s+")
+            .map_err(|e| anyhow::anyhow!("Failed to compile regex: {}", e))?;
+        let clean_string = re.replace_all(generated_text.trim(), " ").to_string();
+        let formatted_string = format!("Inference: {}", clean_string);
+        let c_word = CString::new(formatted_string)?;
+        *inference = c_word.into_raw(); // Pass the result back
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_run_latest_models(
+    model_path: *const c_char,
+    tokenizer_buffer: *const u8,
+    tokenizer_buffer_size: usize,
+    inference: *mut *mut c_char,
+    num_tokens: usize,
+    inference_model: *mut *mut MyInferenceModel
+) -> TRACT_RESULT {
+    // Define the result to be returned
+    let result = (|| -> Result<(), anyhow::Error> {
+        let tokenizer_data = unsafe {
+            slice::from_raw_parts(tokenizer_buffer, tokenizer_buffer_size)
+        };
+
+        // Create the tokenizer from bytes
+        let tokenizer_result = Tokenizer::from_bytes(tokenizer_data);
+        let tokenizer = match tokenizer_result {
+            Ok(tokenizer) => tokenizer,
+            Err(_) => return Err(anyhow::anyhow!("Failed to read tokenizer")),
+        };
+
+        let prompt = "Hello, how are you today?";
+
+        let tokenizer_output_result = tokenizer.encode(prompt, true);
+        let tokenizer_output = match tokenizer_output_result {
+            Ok(output) => output,
+            Err(_) => return Err(anyhow::anyhow!("Failed to encode text")),
+        };
+
+        let mut current_ids: Vec<u32> = tokenizer_output.get_ids().to_vec();
+        let mut current_attention_mask: Vec<u32> = tokenizer_output.get_attention_mask().to_vec();
+        let mut current_position_ids: Vec<u32> = (0..current_ids.len() as u32).collect();
+
+        let model = {
+            #[cfg(feature = "use_sys_time")]
+            {
+                let shape_input_ids = [1, current_ids.len()];
+                let shape_attention_mask = [1, current_attention_mask.len()];
+                let shape_position_ids = [1, current_position_ids.len()];
+                if inference_model.is_null() {
+                    let path = CStr::from_ptr(model_path).to_str()?;
+                    let model_dir = PathBuf::from_str(path)?;
+                    tract_onnx::onnx().model_for_path(model_dir)?
+                        .with_input_fact(0, i64::fact(shape_input_ids).into())?
+                        .with_input_fact(1, i64::fact(shape_attention_mask).into())?
+                        .with_input_fact(2, i64::fact(shape_position_ids).into())?
+                        .into_typed()?
+                        .into_runnable()?
+                } else {
+                    Box::from_raw(*inference_model)
+                        .with_input_fact(0, i64::fact(shape_input_ids).into())?
+                        .with_input_fact(1, i64::fact(shape_attention_mask).into())?
+                        .with_input_fact(2, i64::fact(shape_position_ids).into())?
+                        .into_typed()?
+                        .into_runnable()?
+                }
+            }
+
+            #[cfg(not(feature = "use_sys_time"))]
+            {
+                if inference_model.is_null() {
+                    let path = CStr::from_ptr(model_path).to_str()?;
+                    let model_dir = PathBuf::from_str(path)?;
+                    tract_onnx::onnx().model_for_path(model_dir)?
+                        .into_optimized()?
+                        .into_runnable()?
+                } else {
+                    Box::from_raw(*inference_model).into_optimized()?.into_runnable()?
+                }
+            }
+        };
+
+        for _ in current_ids.len()..num_tokens {
+            let input_ids_tensor: Tensor = Array2::from_shape_vec(
+                (1, current_ids.len()),
+                current_ids.iter().map(|&x| x as i64).collect(),
+            )?.into();
+
+            let attention_mask_tensor: Tensor = Array2::from_shape_vec(
+                (1, current_attention_mask.len()),
+                current_attention_mask.iter().map(|&x| x as i64).collect(),
+            )?.into();
+
+            let position_ids_tensor: Tensor = Array2::from_shape_vec(
+                (1, current_position_ids.len()),
+                current_position_ids.iter().map(|&x| x as i64).collect(),
+            )?.into();
+
+            let outputs = model.run(tvec!(input_ids_tensor.into(), attention_mask_tensor.into(), position_ids_tensor.into()))?;
+            let logits = outputs[0].to_array_view::<f32>()?;
+            let last_logits = logits.slice(s![0, -1, ..]);
+
+            // Top-k sampling
+            let k = 10;
+            let mut scored: Vec<(usize, f32)> = last_logits
+                .iter()
+                .cloned()
+                .enumerate()
+                .collect();
+
+            scored.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+            let top_k = &scored[..k.min(scored.len())];
+            let next_token_id = top_k
+                .choose(&mut thread_rng())
+                .map(|(idx, _)| *idx)
+                .unwrap() as u32;
+
+            // Stop if model outputs <|endoftext|> token (50256 in GPT-2)
+            let eos_token_id = tokenizer.get_vocab(true).get("<|endoftext|>").cloned().unwrap_or(50256);
+            if next_token_id == eos_token_id {
+                break;
+            }
+
+            current_ids.push(next_token_id);
+            current_attention_mask.push(1);
+            current_position_ids.push(current_position_ids.last().unwrap() + 1);
         }
 
         let generated_text = tokenizer.decode(&current_ids, true).map_err(|e| {
