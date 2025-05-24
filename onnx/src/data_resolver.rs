@@ -22,6 +22,7 @@ pub trait ModelDataResolver {
         p: &Path,
         offset: usize,
         length: Option<usize>,
+        weights_data: Option<&[u8]>
     ) -> TractResult<()>;
 }
 
@@ -34,6 +35,7 @@ impl ModelDataResolver for FopenDataResolver {
         p: &Path,
         offset: usize,
         length: Option<usize>,
+        _weights_data: Option<&[u8]>
     ) -> TractResult<()> {
         let file = File::open(p).with_context(|| format!("Opening {p:?}"))?;
         let file_size = file.metadata()?.len() as usize;
@@ -60,16 +62,19 @@ impl ModelDataResolver for MmapDataResolver {
     fn read_bytes_from_path(
         &self,
         buf: &mut Vec<u8>,
-        p: &Path,
+        _p: &Path,
         offset: usize,
         length: Option<usize>,
+        weights_data: Option<&[u8]>
     ) -> TractResult<()> {
-        let file = File::open(p).with_context(|| format!("Opening {p:?}"))?;
-        let mmap = unsafe { memmap2::Mmap::map(&file)? };
-        match length {
-            Some(length) => buf.extend_from_slice(&mmap[offset..offset + length]),
-            None => buf.extend_from_slice(&mmap[offset..]),
-        }
+        if let Some(weights_data) = weights_data {
+            match length {
+                Some(length) => buf.extend_from_slice(&weights_data[offset..offset + length]),
+                None => buf.extend_from_slice(&weights_data[offset..]),
+            }
+        } else {
+            bail!("no model path was specified in the parsing context, yet external data was detected. aborting");
+        }      
         Ok(())
     }
 }

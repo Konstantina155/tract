@@ -38,7 +38,7 @@ pub struct Nnef(tract_nnef::internal::Nnef);
 impl NnefInterface for Nnef {
     type Model = Model;
     fn model_for_path(&self, path: impl AsRef<Path>) -> Result<Model> {
-        self.0.model_for_path(path).map(Model)
+        self.0.model_for_path(path, None).map(Model)
     }
 
     fn enable_tract_core(&mut self) -> Result<()> {
@@ -88,7 +88,7 @@ pub struct Onnx(tract_onnx::Onnx);
 impl OnnxInterface for Onnx {
     type InferenceModel = InferenceModel;
     fn model_for_path(&self, path: impl AsRef<Path>) -> Result<Self::InferenceModel> {
-        Ok(InferenceModel(self.0.model_for_path(path)?))
+        Ok(InferenceModel(self.0.model_for_path(path, None)?))
     }
 }
 

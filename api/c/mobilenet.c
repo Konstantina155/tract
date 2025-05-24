@@ -234,10 +234,7 @@ main(int argc, char **argv)
         char *model_for_path;
         char *tokenizer_path;
         char *model_path= argv[1];
-        if (strcmp(model_path, "albert") == 0) {
-            model_for_path = "../../../albert-base-v2/albert-base-v2.onnx";
-            tokenizer_path = "../../../albert-base-v2/tokenizer.json";
-        } else if (strcmp(model_path, "cerebras-gpt") == 0) {
+        if (strcmp(model_path, "cerebras-gpt") == 0) {
             model_for_path = "../../../github_repo/InferONNX/models/cerebras-gpt-256M/cerebras-gpt-256M.onnx";
             tokenizer_path = "../../../github_repo/InferONNX/models/cerebras-gpt-256M/test_data_set_0/tokenizer.json";
         } else if (strcmp(model_path, "qwen") == 0) {
@@ -247,8 +244,8 @@ main(int argc, char **argv)
             model_for_path = "../../../github_repo/InferONNX/models/llama3.2-1B/llama3.2-1B.onnx";
             tokenizer_path = "../../../github_repo/InferONNX/models/llama3.2-1B/test_data_set_0/tokenizer.json";
         } else if (strcmp(model_path, "deepseek") == 0) {
-            model_for_path = "../../../github_repo/InferONNX/models/deepseek-r1-distill-qwen-1.5B/deepseek-r1-distill-qwen-1.5B.onnx";
-            tokenizer_path = "../../../github_repo/InferONNX/models/deepseek-r1-distill-qwen-1.5B/test_data_set_0/tokenizer.json";
+            model_for_path = "../../../github_repo/InferONNX/models/deepseek-coder-1.3b-base/deepseek-coder-1.3b-base.onnx";
+            tokenizer_path = "../../../github_repo/InferONNX/models/deepseek-coder-1.3b-base/test_data_set_0/tokenizer.json";
         } else {
             fprintf(stderr, "Wrong NLP model!\n");
             return 1;
@@ -259,13 +256,7 @@ main(int argc, char **argv)
         char *inference = NULL;
 
         gettimeofday(&t1_inf, NULL);
-
-        if (strcmp(model_path, "albert") == 0) {
-            tract_run_albert(model_for_path, tokenizer, tokenizer_size, &inference, NULL);
-        } else {
-            tract_run_latest_models(model_for_path, tokenizer, tokenizer_size, &inference, 10, NULL);
-        }
-
+        tract_run_latest_models(model_for_path, tokenizer, tokenizer_size, &inference, 30);
         gettimeofday(&t2_inf, NULL);
         elapsed_time = (t2_inf.tv_sec - t1_inf.tv_sec) * 1000.0;      // sec to ms
         elapsed_time += (t2_inf.tv_usec - t1_inf.tv_usec) / 1000.0;   // us to ms

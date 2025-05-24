@@ -66,6 +66,7 @@ fn get_external_resources(
     provider: &dyn ModelDataResolver,
     t: &TensorProto,
     path: &str,
+    weights_data: Option<&[u8]>
 ) -> TractResult<Vec<u8>> {
     let mut tensor_data: Vec<u8> = Vec::new();
     trace!("number of external file needed for this tensor: {}", t.external_data.len());
@@ -96,7 +97,7 @@ fn get_external_resources(
     let p = PathBuf::from(format!("{}/{}", path, location));
 
     trace!("external file detected: {:?}, offset {:?}, length: {:?}", p, offset, length);
-    provider.read_bytes_from_path(&mut tensor_data, &p, offset, length)?;
+    provider.read_bytes_from_path(&mut tensor_data, &p, offset, length, weights_data)?;
     trace!("external file loaded");
     Ok(tensor_data)
 }
@@ -128,6 +129,7 @@ pub fn load_tensor(
     provider: &dyn ModelDataResolver,
     t: &TensorProto,
     path: Option<&str>,
+    weights_data: Option<&[u8]>
 ) -> TractResult<Tensor> {
     let dt = DataType::from_i32(t.data_type).unwrap().try_into()?;
     let shape: Vec<usize> = t.dims.iter().map(|&i| i as usize).collect();
@@ -139,7 +141,7 @@ pub fn load_tensor(
     } else if is_external {
         if let Some(model_path) = path {
             // external files will be loaded and fed to the tensor if necessary
-            let external_data = get_external_resources(provider, t, model_path)?;
+            let external_data = get_external_resources(provider, t, model_path, weights_data)?;
             create_tensor(shape, dt, &external_data)
         } else {
             bail!("no model path was specified in the parsing context, yet external data was detected. aborting");

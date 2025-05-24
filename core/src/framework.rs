@@ -37,7 +37,7 @@ where
     }
 
     /// Build a model from a filename.
-    fn model_for_path(&self, p: impl AsRef<Path>) -> TractResult<Model> {
+    fn model_for_path(&self, p: impl AsRef<Path>, _weights_data: Option<&[u8]>) -> TractResult<Model> {
         let mut r = std::fs::File::open(p.as_ref())
             .with_context(|| format!("Could not open {:?}", p.as_ref()))?;
         self.model_for_read(&mut r)

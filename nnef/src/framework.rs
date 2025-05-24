@@ -238,7 +238,7 @@ impl Nnef {
 }
 
 impl tract_core::prelude::Framework<ProtoModel, TypedModel> for Nnef {
-    fn model_for_path(&self, p: impl AsRef<Path>) -> TractResult<TypedModel> {
+    fn model_for_path(&self, p: impl AsRef<Path>, _weights_data: Option<&[u8]>) -> TractResult<TypedModel> {
         let proto = self.proto_model_for_path(p)?;
         self.model_for_proto_model(&proto)
     }

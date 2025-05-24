@@ -288,21 +288,27 @@ fn handle_error<T>(result: Result<T, anyhow::Error>) -> TRACT_RESULT {
 }
 
 pub type MyInferenceModel = Graph<InferenceFact, Box<dyn InferenceOp>>;
-#[no_mangle]
-pub unsafe extern "C" fn tract_load_nlp_model(
-    model_path: *const c_char,
-    inference_model: *mut *mut MyInferenceModel
-) -> TRACT_RESULT {
-    // Define the result to be returned
-    let result = (|| -> Result<(), anyhow::Error> {
-        let path = CStr::from_ptr(model_path).to_str()?;
-        let model_dir = PathBuf::from_str(path)?;
-        let model = tract_onnx::onnx().model_for_path(model_dir)?;
-        *inference_model = Box::into_raw(Box::new(model));
-        Ok(())
-    })();
+use std::fs::File;
+fn open_weights_file(
+    path: Option<&str>,
+) -> TractResult<Vec<u8>> {
+    let Some(p) = path else {
+        anyhow::bail!("No model path was specified in the parsing context, yet external data was detected. Aborting");
+    };
 
-    handle_error(result)
+    let mut full_path = PathBuf::from(p).parent().unwrap().to_path_buf();
+    full_path.push("model.onnx_data");
+
+    let file = match File::open(&full_path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            println!("Weights file not found at {:?}", full_path);
+            return Ok(Vec::new());
+        }
+        Err(e) => return Err(e).context(format!("Opening {:?}", full_path)).map_err(Into::into),
+    };
+    let mmap = unsafe { memmap2::Mmap::map(&file)? };
+    Ok(mmap.to_vec())
 }
 
 #[no_mangle]
@@ -345,7 +351,7 @@ pub unsafe extern "C" fn tract_run_albert(
                 if inference_model.is_null() {
                     let path = CStr::from_ptr(model_path).to_str()?;
                     let model_dir = PathBuf::from_str(path)?;
-                    tract_onnx::onnx().model_for_path(model_dir)?
+                    tract_onnx::onnx().model_for_path(model_dir, None)?
                         .with_input_fact(0, i64::fact(shape).into())?
                         .with_input_fact(1, i64::fact(shape).into())?
                         .with_input_fact(2, i64::fact(shape).into())?
@@ -366,7 +372,7 @@ pub unsafe extern "C" fn tract_run_albert(
                 if inference_model.is_null() {
                     let path = CStr::from_ptr(model_path).to_str()?;
                     let model_dir = PathBuf::from_str(path)?;
-                    tract_onnx::onnx().model_for_path(model_dir)?
+                    tract_onnx::onnx().model_for_path(model_dir, None)?
                         .into_optimized()?
                         .into_runnable()?
                 } else {
@@ -466,7 +472,7 @@ pub unsafe extern "C" fn tract_run_gpt2(
                 if inference_model.is_null() {
                     let path = CStr::from_ptr(model_path).to_str()?;
                     let model_dir = PathBuf::from_str(path)?;
-                    tract_onnx::onnx().model_for_path(model_dir)?
+                    tract_onnx::onnx().model_for_path(model_dir, None)?
                         .with_input_fact(0, i64::fact(shape_input_ids).into())?
                         .with_input_fact(1, i64::fact(shape_attention_mask).into())?
                         .into_typed()?
@@ -485,7 +491,7 @@ pub unsafe extern "C" fn tract_run_gpt2(
                 if inference_model.is_null() {
                     let path = CStr::from_ptr(model_path).to_str()?;
                     let model_dir = PathBuf::from_str(path)?;
-                    tract_onnx::onnx().model_for_path(model_dir)?
+                    tract_onnx::onnx().model_for_path(model_dir, None)?
                         .into_optimized()?
                         .into_runnable()?
                 } else {
@@ -556,8 +562,7 @@ pub unsafe extern "C" fn tract_run_latest_models(
     tokenizer_buffer: *const u8,
     tokenizer_buffer_size: usize,
     inference: *mut *mut c_char,
-    num_tokens: usize,
-    inference_model: *mut *mut MyInferenceModel
+    num_tokens: usize
 ) -> TRACT_RESULT {
     // Define the result to be returned
     let result = (|| -> Result<(), anyhow::Error> {
@@ -590,36 +595,37 @@ pub unsafe extern "C" fn tract_run_latest_models(
                 let shape_input_ids = [1, current_ids.len()];
                 let shape_attention_mask = [1, current_attention_mask.len()];
                 let shape_position_ids = [1, current_position_ids.len()];
-                if inference_model.is_null() {
-                    let path = CStr::from_ptr(model_path).to_str()?;
-                    let model_dir = PathBuf::from_str(path)?;
-                    tract_onnx::onnx().model_for_path(model_dir)?
-                        .with_input_fact(0, i64::fact(shape_input_ids).into())?
-                        .with_input_fact(1, i64::fact(shape_attention_mask).into())?
-                        .with_input_fact(2, i64::fact(shape_position_ids).into())?
-                        .into_typed()?
-                        .into_runnable()?
+                let path = CStr::from_ptr(model_path).to_str()?;
+                let model_dir = PathBuf::from_str(path)?;
+                let decrypted = open_weights_file(Some(path))?;
+                let weights_data = if decrypted.is_empty() {
+                    None
                 } else {
-                    Box::from_raw(*inference_model)
-                        .with_input_fact(0, i64::fact(shape_input_ids).into())?
-                        .with_input_fact(1, i64::fact(shape_attention_mask).into())?
-                        .with_input_fact(2, i64::fact(shape_position_ids).into())?
-                        .into_typed()?
-                        .into_runnable()?
-                }
+                    Some(decrypted)
+                };
+
+                tract_onnx::onnx().model_for_path(model_dir, weights_data.as_deref())?
+                    .with_input_fact(0, i64::fact(shape_input_ids).into())?
+                    .with_input_fact(1, i64::fact(shape_attention_mask).into())?
+                    .with_input_fact(2, i64::fact(shape_position_ids).into())?
+                    .into_typed()?
+                    .into_runnable()?
             }
 
             #[cfg(not(feature = "use_sys_time"))]
             {
-                if inference_model.is_null() {
-                    let path = CStr::from_ptr(model_path).to_str()?;
-                    let model_dir = PathBuf::from_str(path)?;
-                    tract_onnx::onnx().model_for_path(model_dir)?
-                        .into_optimized()?
-                        .into_runnable()?
+                let path = CStr::from_ptr(model_path).to_str()?;
+                let model_dir = PathBuf::from_str(path)?;
+                let decrypted = open_weights_file(Some(path))?;
+                let weights_data = if decrypted.is_empty() {
+                    None
                 } else {
-                    Box::from_raw(*inference_model).into_optimized()?.into_runnable()?
-                }
+                    Some(decrypted)
+                };
+
+                tract_onnx::onnx().model_for_path(model_dir, weights_data.as_deref())?
+                    .into_optimized()?
+                    .into_runnable()?
             }
         };
 
