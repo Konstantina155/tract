@@ -49,7 +49,7 @@ fn konst(
     node: &NodeProto,
 ) -> TractResult<(Box<dyn InferenceOp>, Vec<String>)> {
     let value = if let Some(v) = node.get_attr_opt("value")? {
-        ctx.load_tensor(v)?
+        ctx.load_tensor(v, None)?
     } else if let Some(i) = node.get_attr_opt::<i64>("value_int")? {
         tensor0(i)
     } else if let Some(v) = node.get_attr_opt::<f32>("value_float")? {

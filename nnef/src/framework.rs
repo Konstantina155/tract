@@ -245,7 +245,7 @@ pub struct EncryptionParameters {
     pub tag: *const u8
 }
 impl tract_core::prelude::Framework<ProtoModel, TypedModel> for Nnef {
-    fn model_for_path(&self, p: impl AsRef<Path>, _params: Option<*const tract_core::framework::EncryptionParameters>) -> TractResult<TypedModel> {
+    fn model_for_path(&self, p: impl AsRef<Path>, _params: Option<*const tract_core::framework::EncryptionParameters>, _weights_decrypted: Option<&[u8]>) -> TractResult<TypedModel> {
         let proto = self.proto_model_for_path(p, None)?;
         self.model_for_proto_model(&proto)
     }

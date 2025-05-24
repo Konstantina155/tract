@@ -291,7 +291,6 @@ main(int argc, char **argv)
         fprintf(stderr, "Memory allocation for params failed\n");
         return 1;
     }
-    size_t len;
     uint8_t *tag = NULL;
     uint8_t *key = write_to_buffer("aes/key.bin");
     uint8_t *iv = write_to_buffer("aes/iv.bin");
@@ -319,31 +318,93 @@ main(int argc, char **argv)
         fprintf(stderr, "%02x", params->aad[i]);
     }
     fprintf(stderr, "\n");
+
+    // now same for weights
+    EncryptionParameters *params_weights = (EncryptionParameters *)malloc(sizeof(EncryptionParameters));
+    if (!params_weights) {
+        fprintf(stderr, "Memory allocation for params_weights failed\n");
+        return 1;
+    }
+    uint8_t *tag_weights = NULL;
+    uint8_t *key_weights = write_to_buffer("aes/key2.bin");
+    uint8_t *iv_weights = write_to_buffer("aes/iv2.bin");
+    uint8_t *aad_weights = write_to_buffer("aes/add_data2.bin");
+    if (!key_weights || !iv_weights || !aad_weights) {
+        fprintf(stderr, "Error writing to buffer for weights\n");
+        free(params);
+        return 1;
+    }
+    params_weights->key = key_weights;
+    params_weights->iv = iv_weights;
+    params_weights->aad = aad_weights;
+
+    // print the params_weights
+    fprintf(stderr, "\nNow for weights: \nKey: ");
+    for (int i = 0; i < KEY_BYTES; i++) {
+        fprintf(stderr, "%02x", params_weights->key[i]);
+    }
+    fprintf(stderr, "\nIV: ");
+    for (int i = 0; i < IV_BYTES; i++) {
+        fprintf(stderr, "%02x", params_weights->iv[i]);
+    }
+    fprintf(stderr, "\nAAD: ");
+    for (int i = 0; i < ADD_DATA_BYTES; i++) {
+        fprintf(stderr, "%02x", params_weights->aad[i]);
+    }
+    fprintf(stderr, "\n");
     // end testing
 
     if (strcmp(argv[2], "tokenizer.json") == 0) {
-        bool is_albert = strcmp(argv[1], "albert") == 0;
-        const char *tag_message = is_albert ? "96aa0af6a8f5cd9fdacd9c083e89590a" : "8696b1d05df54472d3af2e6629335c9a";
+        const char *tag_message = "0cf3986d676ae98f7cf7547827747e7a";
+        const char *tag_message_weights = "38fcac6287a2e8d4c49f2284fc7ab4ee";
         tag = (uint8_t *)malloc(TAG_BYTES * 2);
         if (!tag) {
             fprintf(stderr, "Memory allocation for tag failed\n");
             return 1;
         }
         memcpy(tag, tag_message, TAG_BYTES * 2);
-        //tag = write_to_buffer(tag_message);
+        tag_weights = (uint8_t *)malloc(TAG_BYTES * 2);
         if (!tag) {
-            fprintf(stderr, "Error writing to buffer\n");
+            fprintf(stderr, "Memory allocation for tag failed\n");
             return 1;
         }
+        memcpy(tag_weights, tag_message_weights, TAG_BYTES * 2);
+        //tag = write_to_buffer(tag_message);
+        // if (!tag) {
+        //     fprintf(stderr, "Error writing to buffer\n");
+        //     return 1;
+        // }
         params->tag = tag;
-        fprintf(stderr, "\nTag: ");
-        for (int i = 0; i < TAG_BYTES; i++) {
-            fprintf(stderr, "%02x", params->tag[i]);
-        }
-        fprintf(stderr, "\n");
+        fprintf(stderr, "\nTag: %s\n", params->tag);
+        // for (int i = 0; i < TAG_BYTES; i++) {
+        //     fprintf(stderr, "%02x", params->tag[i]); //%02x
+        // }
+        // fprintf(stderr, "\n");
+        params_weights->tag = tag_weights;
+        fprintf(stderr, "Tag weights: %s\n", params_weights->tag);
 
-        char *model_for_path = is_albert ? "/hdd/papafrkon/albert-base-v2/albert-base-v2.onnx" : "/hdd/papafrkon/dAIEdgeServer/models/gpt2/gpt2.onnx";
-        char *tokenizer_path = is_albert ? "/hdd/papafrkon/dAIEdgeServer/models/albert-large-v2/test_data_set_0/tokenizer.json" : "/hdd/papafrkon/dAIEdgeServer/models/gpt2/test_data_set_0/tokenizer.json";
+        char *model_for_path = NULL, *model_for_path_weights = NULL;
+        char *tokenizer_path;
+        char *model_path= argv[1];
+        if (strcmp(model_path, "cerebras-gpt") == 0) {
+            model_for_path = "../../../github_repo/InferONNX/models/cerebras-gpt-256M/cerebras-gpt-256M.onnx";
+            tokenizer_path = "../../../github_repo/InferONNX/models/cerebras-gpt-256M/test_data_set_0/tokenizer.json";
+        } else if (strcmp(model_path, "qwen") == 0) {
+            model_for_path = "../../../github_repo/InferONNX/models/qwen2.5-0.5B/qwen2.5-0.5B.onnx";
+            model_for_path_weights = "./model.onnx_data";
+            tokenizer_path = "../../../github_repo/InferONNX/models/qwen2.5-0.5B/test_data_set_0/tokenizer.json";
+        } else if (strcmp(model_path, "llama") == 0) {
+            model_for_path = "../../../github_repo/InferONNX/models/llama3.2-1B/llama3.2-1B.onnx";
+            model_for_path_weights = "../../../github_repo/InferONNX/models/llama3.2-1B/model.onnx_data";
+            tokenizer_path = "../../../github_repo/InferONNX/models/llama3.2-1B/test_data_set_0/tokenizer.json";
+        } else if (strcmp(model_path, "deepseek") == 0) {
+            model_for_path = "../../../github_repo/InferONNX/models/deepseek-coder-1.3b-base/deepseek-coder-1.3b-base.onnx";
+            model_for_path_weights = "../../../github_repo/InferONNX/models/deepseek-coder-1.3b-base/model.onnx_data";
+            tokenizer_path = "../../../github_repo/InferONNX/models/deepseek-coder-1.3b-base/test_data_set_0/tokenizer.json";
+        } else {
+            fprintf(stderr, "Wrong NLP model!\n");
+            return 1;
+        }
         int tokenizer_size = read_tokenizer(tokenizer_path);
         const uint8_t* tokenizer = write_to_buffer(tokenizer_path);
        
@@ -351,16 +412,11 @@ main(int argc, char **argv)
         MyInferenceModel *inference_models = NULL;
 
 #if USE_MEMORY_ONLY == 1        
-        tract_load_nlp_model(model_for_path, params, &inference_models);
+        tract_load_nlp_model(model_for_path, params, params_weights, &inference_models);
         assert(inference_models);
 #endif
         gettimeofday(&t1_inf, NULL);
-        if (is_albert) {
-            tract_run_albert(model_for_path, tokenizer, tokenizer_size, &inference, params, inference_models ? &inference_models : NULL);
-        } else {
-            tract_run_gpt2(model_for_path, tokenizer, tokenizer_size, &inference, params, 30, inference_models ? &inference_models : NULL);
-        }
-
+        tract_run_latest_models(model_for_path, tokenizer, tokenizer_size, &inference, params, params_weights, 30, inference_models ? &inference_models : NULL);
         gettimeofday(&t2_inf, NULL);
         elapsed_time = (t2_inf.tv_sec - t1_inf.tv_sec) * 1000.0;      // sec to ms
         elapsed_time += (t2_inf.tv_usec - t1_inf.tv_usec) / 1000.0;   // us to ms

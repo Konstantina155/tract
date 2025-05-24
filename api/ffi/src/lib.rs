@@ -287,18 +287,93 @@ fn handle_error<T>(result: Result<T, anyhow::Error>) -> TRACT_RESULT {
     }
 }
 
+use aes_gcm::{
+    aead::{NewAead, generic_array::GenericArray, generic_array::typenum::U16},
+    Aes256Gcm,
+    AeadInPlace,
+};
+use std::{
+    error::Error,
+};
+pub fn decrypt(key: &[u8], iv: &[u8], cipher_text: &mut [u8], additional_data: &[u8], tag: &GenericArray<u8, U16>) -> Result<(), Box<dyn Error>> {
+    let key = GenericArray::from_slice(key);
+    let cipher = Aes256Gcm::new(key);
+    let nonce = GenericArray::from_slice(iv);
+    let _result = cipher.decrypt_in_place_detached(nonce, additional_data, cipher_text, tag);
+    Ok(())
+}
+
+use std::fs::File;
+fn open_weights_file(
+    path: Option<&str>,
+    params_weights: Option<*const tract_core::framework::EncryptionParameters>
+) -> TractResult<Vec<u8>> {
+    let Some(p) = path else {
+        anyhow::bail!("No model path was specified in the parsing context, yet external data was detected. Aborting");
+    };
+
+    let mut full_path = PathBuf::from(p).parent().unwrap().to_path_buf();
+    full_path.push("model.onnx_data");
+
+    let file = match File::open(&full_path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            println!("Weights file not found at {:?}", full_path);
+            return Ok(Vec::new());
+        }
+        Err(e) => return Err(e).context(format!("Opening {:?}", full_path)).map_err(Into::into),
+    };
+    let mmap = unsafe { memmap2::Mmap::map(&file)? };
+    if let Some(ptr) = params_weights {
+        if ptr.is_null() {
+            anyhow::bail!("Encryption parameters pointer is null!");
+        }
+
+        let params_weights = unsafe { &*ptr };
+        if params_weights.key.is_null()
+            || params_weights.iv.is_null()
+            || params_weights.aad.is_null()
+            || params_weights.tag.is_null()
+        {
+            anyhow::bail!("Encryption parameters contain null pointers!");
+        }
+
+        let key = unsafe { slice::from_raw_parts(params_weights.key, 32) };
+        let iv = unsafe { slice::from_raw_parts(params_weights.iv, 12) };
+        let aad = unsafe { slice::from_raw_parts(params_weights.aad, 64) };
+        let tag_slice = unsafe { slice::from_raw_parts(params_weights.tag, 32) };
+        let tag_bytes_vec = hex::decode(tag_slice).expect("Error decoding tag!");
+        let tag_bytes = GenericArray::clone_from_slice(&tag_bytes_vec[..16]);
+
+        let mut model_data = mmap.to_vec();
+        decrypt(key, iv, &mut model_data, aad, &tag_bytes)
+            .map_err(|e| anyhow::anyhow!("Error decrypting model: {}", e))?;
+        Ok(model_data)
+    } else {
+        anyhow::bail!("no model path was specified in the parsing context, yet external data was detected. aborting");
+    }
+}
+
 pub type MyInferenceModel = Graph<InferenceFact, Box<dyn InferenceOp>>;
 #[no_mangle]
 pub unsafe extern "C" fn tract_load_nlp_model(
     model_path: *const c_char,
     params: *const tract_core::framework::EncryptionParameters,
+    params_weights: *const tract_core::framework::EncryptionParameters,
     inference_model: *mut *mut MyInferenceModel
 ) -> TRACT_RESULT  {
     // Define the result to be returned
     let result = (|| -> Result<(), anyhow::Error> {
         let path = CStr::from_ptr(model_path).to_str()?;
         let model_dir = PathBuf::from_str(path)?;
-        let model = tract_onnx::onnx().model_for_path(model_dir, Some(params))?;
+        let decrypted = open_weights_file(Some(path), Some(params_weights))?;
+        let weights_data = if decrypted.is_empty() {
+            None
+        } else {
+            Some(decrypted)
+        };
+
+        let model = tract_onnx::onnx().model_for_path(model_dir, Some(params), weights_data.as_deref())?;
         *inference_model = Box::into_raw(Box::new(model));
         Ok(())
     })();
@@ -348,7 +423,7 @@ pub unsafe extern "C" fn tract_run_albert(
                 if inference_model.is_null() {
                     let path = CStr::from_ptr(model_path).to_str()?;
                     let model_dir = PathBuf::from_str(path)?;
-                    tract_onnx::onnx().model_for_path(model_dir, Some(params))?
+                    tract_onnx::onnx().model_for_path(model_dir, Some(params), None)?
                         .with_input_fact(0, i64::fact(shape).into())?
                         .with_input_fact(1, i64::fact(shape).into())?
                         .with_input_fact(2, i64::fact(shape).into())?
@@ -369,7 +444,7 @@ pub unsafe extern "C" fn tract_run_albert(
                 if inference_model.is_null() {
                     let path = CStr::from_ptr(model_path).to_str()?;
                     let model_dir = PathBuf::from_str(path)?;
-                    tract_onnx::onnx().model_for_path(model_dir, Some(params))?
+                    tract_onnx::onnx().model_for_path(model_dir, Some(params), None)?
                         .into_optimized()?
                         .into_runnable()?
                 } else {
@@ -470,7 +545,7 @@ pub unsafe extern "C" fn tract_run_gpt2(
                 if inference_model.is_null() {
                     let path = CStr::from_ptr(model_path).to_str()?;
                     let model_dir = PathBuf::from_str(path)?;
-                    tract_onnx::onnx().model_for_path(model_dir, Some(params))?
+                    tract_onnx::onnx().model_for_path(model_dir, Some(params), None)?
                         .with_input_fact(0, i64::fact(shape_input_ids).into())?
                         .with_input_fact(1, i64::fact(shape_attention_mask).into())?
                         .into_typed()?
@@ -489,7 +564,7 @@ pub unsafe extern "C" fn tract_run_gpt2(
                 if inference_model.is_null() {
                     let path = CStr::from_ptr(model_path).to_str()?;
                     let model_dir = PathBuf::from_str(path)?;
-                    tract_onnx::onnx().model_for_path(model_dir, Some(params))?
+                    tract_onnx::onnx().model_for_path(model_dir, Some(params), None)?
                         .into_optimized()?
                         .into_runnable()?
                 } else {
@@ -561,6 +636,7 @@ pub unsafe extern "C" fn tract_run_latest_models(
     tokenizer_buffer_size: usize,
     inference: *mut *mut c_char,
     params: *const tract_core::framework::EncryptionParameters,
+    params_weights: *const tract_core::framework::EncryptionParameters,
     num_tokens: usize,
     inference_model: *mut *mut MyInferenceModel
 ) -> TRACT_RESULT {
@@ -598,7 +674,14 @@ pub unsafe extern "C" fn tract_run_latest_models(
                 if inference_model.is_null() {
                     let path = CStr::from_ptr(model_path).to_str()?;
                     let model_dir = PathBuf::from_str(path)?;
-                    tract_onnx::onnx().model_for_path(model_dir, Some(params))?
+                    let decrypted = open_weights_file(Some(path), Some(params_weights))?;
+                    let weights_data = if decrypted.is_empty() {
+                        None
+                    } else {
+                        Some(decrypted)
+                    };
+
+                    tract_onnx::onnx().model_for_path(model_dir, Some(params), weights_data.as_deref())?
                         .with_input_fact(0, i64::fact(shape_input_ids).into())?
                         .with_input_fact(1, i64::fact(shape_attention_mask).into())?
                         .with_input_fact(2, i64::fact(shape_position_ids).into())?
@@ -619,7 +702,14 @@ pub unsafe extern "C" fn tract_run_latest_models(
                 if inference_model.is_null() {
                     let path = CStr::from_ptr(model_path).to_str()?;
                     let model_dir = PathBuf::from_str(path)?;
-                    tract_onnx::onnx().model_for_path(model_dir, Some(params))?
+                    let decrypted = open_weights_file(Some(path), Some(params_weights))?;
+                    let weights_data = if decrypted.is_empty() {
+                        None
+                    } else {
+                        Some(decrypted)
+                    };
+
+                    tract_onnx::onnx().model_for_path(model_dir, Some(params), weights_data.as_deref())?
                         .into_optimized()?
                         .into_runnable()?
                 } else {
@@ -730,7 +820,7 @@ pub unsafe extern "C" fn tract_onnx_model_for_path(
 
         *model = std::ptr::null_mut();
         let path = CStr::from_ptr(path).to_str()?;
-        let m = Arc::new(TractInferenceModel((*onnx).0.model_for_path(path, Some(params))?));
+        let m = Arc::new(TractInferenceModel((*onnx).0.model_for_path(path, Some(params), None)?));
         *model = Arc::into_raw(m) as *mut _;
         Ok(())
     })

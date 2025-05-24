@@ -54,11 +54,13 @@ pub struct ParseResult {
 }
 
 impl<'a> ParsingContext<'a> {
-    pub fn load_tensor(&self, proto: &TensorProto) -> TractResult<Tensor> {
-        load_tensor(&*self.framework.provider, proto, self.model_dir)
+    pub fn load_tensor(&self, proto: &TensorProto, weights_decrypted: Option<&[u8]>) -> TractResult<Tensor> {
+        // Inside the load_tensor function
+        load_tensor(&*self.framework.provider, proto, self.model_dir, weights_decrypted)
     }
 
-    pub fn parse_graph(&self, graph: &pb::GraphProto) -> TractResult<ParseResult> {
+    pub fn parse_graph(&self, graph: &pb::GraphProto, weights_decrypted: Option<&[u8]>) -> TractResult<ParseResult> {
+        // Inside the parse_graph function
         let mut ctx = self.clone();
         ctx.parent_graphs.push(graph);
         let mut model =
@@ -71,7 +73,8 @@ impl<'a> ParsingContext<'a> {
             .initializer
             .iter()
             .map(|name| {
-                let t = self.load_tensor(name)?;
+                // Inside the before load_tensor function
+                let t = self.load_tensor(name, weights_decrypted)?;
                 Ok((&*name.name, t))
             })
             .collect::<TractResult<_>>()?;
@@ -234,14 +237,15 @@ impl Default for Onnx {
 }
 
 impl Onnx {
-    pub fn parse(&self, proto: &pb::ModelProto, path: Option<&str>) -> TractResult<ParseResult> {
-        self.parse_with_symbols(proto, path, &SymbolTable::default())
+    pub fn parse(&self, proto: &pb::ModelProto, path: Option<&str>, weights_decrypted: Option<&[u8]>) -> TractResult<ParseResult> {
+        self.parse_with_symbols(proto, path, &SymbolTable::default(), weights_decrypted)
     }
     pub fn parse_with_symbols(
         &self,
         proto: &pb::ModelProto,
         model_dir: Option<&str>,
         symbol_table: &SymbolTable,
+        weights_decrypted: Option<&[u8]>
     ) -> TractResult<ParseResult> {
         let onnx_operator_set_version = proto
             .opset_import
@@ -266,7 +270,9 @@ impl Onnx {
             symbol_table: symbol_table.clone(),
         };
         trace!("created ParsingContext");
-        ctx.parse_graph(graph)
+        
+        // Inside the parse_with_symbols function
+        ctx.parse_graph(graph, weights_decrypted)
     }
 
     pub fn with_ignore_output_shapes(self, ignore: bool) -> Onnx {
@@ -308,7 +314,7 @@ pub fn decrypt(key: &[u8], iv: &[u8], cipher_text: &mut [u8], additional_data: &
 }
 
 impl Framework<pb::ModelProto, InferenceModel> for Onnx {
-    fn model_for_path(&self, p: impl AsRef<path::Path>, params: Option<*const tract_core::framework::EncryptionParameters>) -> TractResult<InferenceModel> {
+    fn model_for_path(&self, p: impl AsRef<path::Path>, params: Option<*const tract_core::framework::EncryptionParameters>, weights_decrypted: Option<&[u8]>) -> TractResult<InferenceModel> {
         // Inside the model_for_path function in wasm
         let mut path = PathBuf::new();
         path.push(&p);
@@ -327,7 +333,7 @@ impl Framework<pb::ModelProto, InferenceModel> for Onnx {
 
         let proto = self.proto_model_for_path(p, Some(params))?;
         // The graph is created in below function
-        let ParseResult { model, unresolved_inputs, .. } = self.parse(&proto, dir)?;
+        let ParseResult { model, unresolved_inputs, .. } = self.parse(&proto, dir, weights_decrypted)?;
         if unresolved_inputs.len() > 0 {
             bail!("Could not resolve inputs at top-level: {:?}", unresolved_inputs)
         }
@@ -398,7 +404,7 @@ impl Framework<pb::ModelProto, InferenceModel> for Onnx {
         symbols: &SymbolTable,
     ) -> TractResult<InferenceModel> {
         let ParseResult { model, unresolved_inputs, .. } =
-            self.parse_with_symbols(proto, None, symbols)?;
+            self.parse_with_symbols(proto, None, symbols, None)?;
         if unresolved_inputs.len() > 0 {
             bail!("Could not resolve inputs at top-level: {:?}", unresolved_inputs)
         }

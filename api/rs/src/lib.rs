@@ -38,7 +38,7 @@ pub struct Nnef(tract_nnef::internal::Nnef);
 impl NnefInterface for Nnef {
     type Model = Model;
     fn model_for_path(&self, path: impl AsRef<Path>) -> Result<Model> {
-        self.0.model_for_path(path, None).map(Model)
+        self.0.model_for_path(path, None, None).map(Model)
     }
 
     fn enable_tract_core(&mut self) -> Result<()> {
@@ -87,7 +87,7 @@ impl NnefInterface for Nnef {
 pub struct Onnx(tract_onnx::Onnx);
 impl OnnxInterface for Onnx {
     type InferenceModel = InferenceModel;
-    fn model_for_path(&self, path: impl AsRef<Path>, params: Option<*const tract_core::framework::EncryptionParameters>) -> Result<Self::InferenceModel> {
+    fn model_for_path(&self, path: impl AsRef<Path>, params: Option<*const tract_core::framework::EncryptionParameters>, _weights_decrypted: Option<&[u8]>) -> Result<Self::InferenceModel> {
         // Inside the model_for_path function in OnnxInterface
         let params = match params {
             Some(params) => unsafe { &*params },
@@ -97,7 +97,7 @@ impl OnnxInterface for Onnx {
             anyhow::bail!("Encryption parameters are null!");
         }
 
-        Ok(InferenceModel(self.0.model_for_path(path, Some(params))?))
+        Ok(InferenceModel(self.0.model_for_path(path, Some(params), None)?))
     }
 }
 

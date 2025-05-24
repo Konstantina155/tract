@@ -84,7 +84,7 @@ pub fn constant_of_shape(
     node: &NodeProto,
 ) -> TractResult<(Box<dyn InferenceOp>, Vec<String>)> {
     let mut value = match node.get_attr_opt("value")? {
-        Some(val) => ctx.load_tensor(val)?.into_arc_tensor(),
+        Some(val) => ctx.load_tensor(val, None)?.into_arc_tensor(),
         None => rctensor0(0.0),
     };
     if value.rank() > 0 {

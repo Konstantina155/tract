@@ -30,9 +30,9 @@ pub fn _if(
     let graph_then = node.get_attr("then_branch")?;
     let graph_else = node.get_attr("else_branch")?;
     let ParseResult { model: then_body, unresolved_inputs: unresolved_inputs_then, .. } =
-        ctx.parse_graph(graph_then)?;
+        ctx.parse_graph(graph_then, None)?;
     let ParseResult { model: else_body, unresolved_inputs: unresolved_inputs_else, .. } =
-        ctx.parse_graph(graph_else)?;
+        ctx.parse_graph(graph_else, None)?;
     let unresolved_inputs: Vec<String> = unresolved_inputs_then
         .iter()
         .chain(unresolved_inputs_else.iter())
