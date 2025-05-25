@@ -948,7 +948,6 @@ pub unsafe extern "C" fn tract_inference_model_into_typed(
     typed: *mut *mut TractModel,
 ) -> TRACT_RESULT {
     wrap(|| unsafe {
-        println!("here");
         check_not_null!(model, *model, typed);
         let model_arc = Arc::from_raw(*model);
         let cloned_model_arc = model_arc.clone();
