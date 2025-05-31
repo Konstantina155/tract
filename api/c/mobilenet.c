@@ -260,27 +260,25 @@ main(int argc, char **argv)
         char *inference = NULL;
         int is_albert = strstr(model_path, "albert") != NULL;
 
-        for (int i=0; i < 1; i++) {
-            int tokenizer_size = read_tokenizer(tokenizer_path);
-            uint8_t* tokenizer = write_to_buffer(tokenizer_path);
-            inference = NULL;
-            gettimeofday(&t1_inf, NULL);
-            if (is_albert) {
-                tract_run_albert(model_for_path, tokenizer, tokenizer_size, &inference, NULL);
-            } else {
-                tract_run_latest_models(model_for_path, tokenizer, tokenizer_size, &inference, 5);
-            }
-            gettimeofday(&t2_inf, NULL);
-
-            elapsed_time = (t2_inf.tv_sec - t1_inf.tv_sec) * 1000.0;      // sec to ms
-            elapsed_time += (t2_inf.tv_usec - t1_inf.tv_usec) / 1000.0;   // us to ms
-
-            if (inference) {
-                fprintf(stderr, "%s\nInference time to run a model: %f ms\n", inference, elapsed_time);
-                tract_free_cstring(inference);
-            }
-            free(tokenizer);
+        int tokenizer_size = read_tokenizer(tokenizer_path);
+        uint8_t* tokenizer = write_to_buffer(tokenizer_path);
+        inference = NULL;
+        gettimeofday(&t1_inf, NULL);
+        if (is_albert) {
+            tract_run_albert(model_for_path, tokenizer, tokenizer_size, &inference, NULL);
+        } else {
+            tract_run_latest_models(model_for_path, tokenizer, tokenizer_size, &inference, 5);
         }
+        gettimeofday(&t2_inf, NULL);
+
+        elapsed_time = (t2_inf.tv_sec - t1_inf.tv_sec) * 1000.0;      // sec to ms
+        elapsed_time += (t2_inf.tv_usec - t1_inf.tv_usec) / 1000.0;   // us to ms
+
+        if (inference) {
+            fprintf(stderr, "%s\nInference time to run a model: %f ms\n", inference, elapsed_time);
+            free(inference);
+        }
+        free(tokenizer);
         tract_free_onig();
         return 0;
     }
