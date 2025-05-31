@@ -226,6 +226,10 @@ main(int argc, char **argv)
         return 1;
     }
 
+    // Oniguruma has elask that tokenizer is based on (regex)
+    // Albert: 0 B
+    // Rest latest models: 28,764 bytes in 25 blocks
+
     struct timeval t1_inf, t2_inf;
     double elapsed_time;
     
