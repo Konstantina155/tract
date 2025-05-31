@@ -258,8 +258,18 @@ use rand::seq::SliceRandom;
 use rand::thread_rng;
 use tract_hir::internal::InferenceOp;
 
+use jemalloc_ctl::{epoch, stats};
+#[global_allocator]
+static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
+
 /// Run the Albert example from the tract-onnx crate.
 /// The returned char must be freed with tract_free_cstring().
+fn print_memory(label: &str) {
+    epoch::advance().unwrap();
+    let allocated = stats::allocated::read().unwrap();
+    println!("[{label}] Memory used: {} bytes", allocated);
+}
+
 fn handle_error<T>(result: Result<T, anyhow::Error>) -> TRACT_RESULT {
     match result {
         Ok(_) => {
@@ -354,6 +364,14 @@ fn open_weights_file(
     }
 }
 
+#[no_mangle]
+pub extern "C" fn tract_free_onig() {
+    unsafe {
+        onig_sys::onig_end();
+    }
+    print_memory("After onig_end");
+}
+
 pub type MyInferenceModel = Graph<InferenceFact, Box<dyn InferenceOp>>;
 #[no_mangle]
 pub unsafe extern "C" fn tract_load_nlp_model(
@@ -392,6 +410,7 @@ pub unsafe extern "C" fn tract_run_albert(
 ) -> TRACT_RESULT  {
     // Define the result to be returned
     let result = (|| -> Result<(), anyhow::Error> {
+        print_memory("Start albert");
         let tokenizer_data = unsafe {
             slice::from_raw_parts(tokenizer_buffer, tokenizer_buffer_size)
         };
@@ -479,12 +498,7 @@ pub unsafe extern "C" fn tract_run_albert(
         let outputs = model.run(tvec!(input_ids_tensor.into(), attention_mask_tensor.into(), token_type_ids_tensor.into()))?;
         let logits = outputs[0].to_array_view::<f32>()?;
         let logits = logits.slice(s![0, mask_pos, ..]);
-        let word_id = logits
-            .iter()
-            .zip(0..)
-            .max_by(|a, b| a.0.partial_cmp(b.0).unwrap())
-            .unwrap()
-            .1;
+        let word_id = logits.iter().zip(0..).max_by(|a, b| a.0.partial_cmp(b.0).unwrap()).unwrap().1;
         let word = tokenizer.id_to_token(word_id);
 
         // Handle the Option and create a CString
@@ -497,6 +511,14 @@ pub unsafe extern "C" fn tract_run_albert(
         let formatted_string = format!("Inference: {}", clean_string);
         let c_word = CString::new(formatted_string)?;
         *inference = c_word.into_raw(); // Pass the result back
+        
+        print_memory("Before drop");
+        drop(model);
+        drop(tokenizer);
+        drop(tokenizer_output);
+        drop(outputs);
+        print_memory("After drop");
+
         Ok(())
     })();
 
@@ -515,6 +537,7 @@ pub unsafe extern "C" fn tract_run_gpt2(
 ) -> TRACT_RESULT  {
     // Define the result to be returned
     let result = (|| -> Result<(), anyhow::Error> {  
+        print_memory("Start gpt2");
         let tokenizer_data = unsafe {
             slice::from_raw_parts(tokenizer_buffer, tokenizer_buffer_size)
         };
@@ -610,6 +633,10 @@ pub unsafe extern "C" fn tract_run_gpt2(
 
             current_ids.push(next_token_id);
             current_attention_mask.push(1);
+
+            print_memory("Before dropping outputs");
+            drop(outputs);
+            print_memory("After dropping outputs");
         }
 
         let generated_text = tokenizer.decode(&current_ids, true).map_err(|e| {
@@ -623,6 +650,13 @@ pub unsafe extern "C" fn tract_run_gpt2(
         let formatted_string = format!("Inference: {}", clean_string);
         let c_word = CString::new(formatted_string)?;
         *inference = c_word.into_raw(); // Pass the result back
+
+        print_memory("Before drop");
+        drop(model);
+        drop(tokenizer);
+        drop(tokenizer_output);
+        print_memory("After drop");
+
         Ok(())
     })();
 
@@ -642,6 +676,7 @@ pub unsafe extern "C" fn tract_run_latest_models(
 ) -> TRACT_RESULT {
     // Define the result to be returned
     let result = (|| -> Result<(), anyhow::Error> {
+        print_memory("Start latest_model");
         let tokenizer_data = unsafe {
             slice::from_raw_parts(tokenizer_buffer, tokenizer_buffer_size)
         };
@@ -762,6 +797,10 @@ pub unsafe extern "C" fn tract_run_latest_models(
             current_ids.push(next_token_id);
             current_attention_mask.push(1);
             current_position_ids.push(current_position_ids.last().unwrap() + 1);
+
+            print_memory("Before dropping outputs");
+            drop(outputs);
+            print_memory("After dropping outputs");
         }
 
         let generated_text = tokenizer.decode(&current_ids, true).map_err(|e| {
@@ -775,6 +814,13 @@ pub unsafe extern "C" fn tract_run_latest_models(
         let formatted_string = format!("Inference: {}", clean_string);
         let c_word = CString::new(formatted_string)?;
         *inference = c_word.into_raw(); // Pass the result back
+        
+        print_memory("Before drop");
+        drop(model);
+        drop(tokenizer);
+        drop(tokenizer_output);
+        print_memory("After drop");
+
         Ok(())
     })();
 
