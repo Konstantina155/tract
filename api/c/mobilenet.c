@@ -213,8 +213,7 @@ read_tokenizer(char *filename)
     fseek(fd, 0, SEEK_END);
     long file_size = ftell(fd);
     fseek(fd, 0, SEEK_SET);
-
-    rewind(fd);
+    fclose(fd);
 
     return file_size;
 }
@@ -234,8 +233,11 @@ main(int argc, char **argv)
         char *model_for_path;
         char *tokenizer_path;
         char *model_path= argv[1];
-        if (strcmp(model_path, "cerebras-gpt") == 0) {
-            model_for_path = "../../../github_repo/InferONNX/models/cerebras-gpt-256M/cerebras-gpt-256M.onnx";
+        if (strcmp(model_path, "albert") == 0) {
+            model_for_path = "/hdd/papafrkon/albert-base-v2/albert-base-v2.onnx";
+            tokenizer_path = "/hdd/papafrkon/dAIEdgeServer/models/albert-large-v2/test_data_set_0/tokenizer.json";
+        } else if (strcmp(model_path, "cerebras-gpt") == 0) {
+            model_for_path = "/hdd/papafrkon/tract/examples/pytorch-albert-v2/cerebras-gpt/model.onnx";
             tokenizer_path = "../../../github_repo/InferONNX/models/cerebras-gpt-256M/test_data_set_0/tokenizer.json";
         } else if (strcmp(model_path, "qwen") == 0) {
             model_for_path = "../../../github_repo/InferONNX/models/qwen2.5-0.5B/qwen2.5-0.5B.onnx";
@@ -250,21 +252,32 @@ main(int argc, char **argv)
             fprintf(stderr, "Wrong NLP model!\n");
             return 1;
         }
-        int tokenizer_size = read_tokenizer(tokenizer_path);
-        uint8_t* tokenizer = write_to_buffer(tokenizer_path);
        
         char *inference = NULL;
+        int is_albert = strstr(model_path, "albert") != NULL;
 
-        gettimeofday(&t1_inf, NULL);
-        tract_run_latest_models(model_for_path, tokenizer, tokenizer_size, &inference, 30);
-        gettimeofday(&t2_inf, NULL);
-        elapsed_time = (t2_inf.tv_sec - t1_inf.tv_sec) * 1000.0;      // sec to ms
-        elapsed_time += (t2_inf.tv_usec - t1_inf.tv_usec) / 1000.0;   // us to ms
+        for (int i=0; i < 1; i++) {
+            int tokenizer_size = read_tokenizer(tokenizer_path);
+            uint8_t* tokenizer = write_to_buffer(tokenizer_path);
+            inference = NULL;
+            gettimeofday(&t1_inf, NULL);
+            if (is_albert) {
+                tract_run_albert(model_for_path, tokenizer, tokenizer_size, &inference, NULL);
+            } else {
+                tract_run_latest_models(model_for_path, tokenizer, tokenizer_size, &inference, 5);
+            }
+            gettimeofday(&t2_inf, NULL);
 
-        fprintf(stderr, "%s\nInference time to run a model: %f ms\n", inference, elapsed_time);
+            elapsed_time = (t2_inf.tv_sec - t1_inf.tv_sec) * 1000.0;      // sec to ms
+            elapsed_time += (t2_inf.tv_usec - t1_inf.tv_usec) / 1000.0;   // us to ms
 
-        free(tokenizer);
-        free(inference);
+            if (inference) {
+                fprintf(stderr, "%s\nInference time to run a model: %f ms\n", inference, elapsed_time);
+                tract_free_cstring(inference);
+            }
+            free(tokenizer);
+        }
+        tract_free_onig();
         return 0;
     }
 

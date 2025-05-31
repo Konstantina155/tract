@@ -8,7 +8,10 @@ use tract_onnx::prelude::*;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use regex::Regex;
-use sentencepiece::SentencePieceProcessor;
+
+use jemalloc_ctl::{epoch, stats};
+#[global_allocator]
+static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 fn albert(model_path: &str) -> Result<()> {
     let model_dir = PathBuf::from_str(model_path)?;
@@ -25,7 +28,7 @@ fn albert(model_path: &str) -> Result<()> {
         input_ids.iter().position(|&x| x == tokenizer.token_to_id("[MASK]").unwrap()).unwrap();
 
     let model = tract_onnx::onnx()
-        .model_for_path(Path::join(&model_dir, "model.onnx"))?
+        .model_for_path(Path::join(&model_dir, "model.onnx"), None)?
         .into_optimized()?
         .into_runnable()?;
 
@@ -53,6 +56,13 @@ fn albert(model_path: &str) -> Result<()> {
     let word = tokenizer.id_to_token(word_id);
     println!("Albert: {word:?}");
 
+    print_memory("Before drop");
+    drop(model);
+    drop(tokenizer);
+    drop(tokenizer_output);
+    drop(outputs);
+    print_memory("After drop");
+
    Ok(())
 }
 
@@ -61,7 +71,7 @@ fn gpt2(model_path: &str) -> Result<String> {
     let tokenizer = Tokenizer::from_file(model_dir.join("tokenizer.json"))?;
 
     let model = tract_onnx::onnx()
-        .model_for_path(model_dir.join("model.onnx"))?
+        .model_for_path(model_dir.join("model.onnx"), None)?
         .into_optimized()?
         .into_runnable()?;
 
@@ -129,8 +139,15 @@ fn latest_models(model_path: &str) -> Result<String> {
     let model_dir = PathBuf::from_str(model_path)?;
     let tokenizer = Tokenizer::from_file(model_dir.join("tokenizer.json"))?;
 
+    let model_name = if let Some(pos) = model_path.rfind('/') {
+        &model_path[pos + 1..]
+    } else {
+        model_path
+    };
+    let _model_name_with_ext = format!("{}.onnx", model_name);
+
     let model = tract_onnx::onnx()
-        .model_for_path(model_dir.join("model.onnx"))?
+        .model_for_path(model_dir.join("model.onnx"), None)?
         .into_optimized()?
         .into_runnable()?;
 
@@ -185,6 +202,10 @@ fn latest_models(model_path: &str) -> Result<String> {
         current_ids.push(next_token_id);
         current_attention_mask.push(1);
         current_position_ids.push(current_position_ids.last().unwrap() + 1);
+
+        print_memory("Before drop outputs");
+        drop(outputs);
+        print_memory("After drop outputs");
     }
 
     let generated_text = tokenizer.decode(&current_ids, true)?;
@@ -202,13 +223,39 @@ fn latest_models(model_path: &str) -> Result<String> {
         .and_then(|s| s.to_str())
         .expect("Invalid path or non-UTF8 filename");
     println!("{}: {}", name, two_sentences);
+
+    print_memory("Before drop");
+    drop(model);
+    drop(tokenizer);
+    drop(tokenizer_output);
+    print_memory("After drop");
+
     Ok(two_sentences)
 }
 
+fn print_memory(label: &str) {
+    epoch::advance().unwrap();
+    let allocated = stats::allocated::read().unwrap();
+    println!("[{label}] Memory used: {} bytes", allocated);
+}
+
 fn main() -> Result<()> {
-    latest_models("./cerebras-gpt")?;
-    latest_models("./qwen2")?;
-    latest_models("./llama")?;
-    latest_models("./deepseek")?;
+    // print_memory("Start1 cerebras-gpt");
+    // latest_models("./cerebras-gpt")?;
+    // print_memory("After1 cerebras-gpt");
+
+    // print_memory("Start2 cerebras-gpt");
+    // latest_models("./cerebras-gpt")?;
+    // print_memory("After2 cerebras-gpt");
+
+    print_memory("Start1 albert");
+    albert("./albert")?;
+    print_memory("After1 albert");
+
+    // albert("./albert")?;
+    // latest_models("./cerebras-gpt")?;
+    // latest_models("../../../github_repo/InferONNX/models/qwen2.5-0.5B")?;
+    // latest_models("../../../github_repo/InferONNX/models/deepseek-coder-1.3b-base")?;
+    // latest_models("../../../github_repo/InferONNX/models/llama3.2-1B")?;
     Ok(())
 }

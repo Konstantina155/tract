@@ -6,6 +6,8 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+jemallocator = "0.3"
+jemalloc-ctl = "0.3"
 rand = "0.8"
 regex = "1"
 anstyle.workspace = true
@@ -16,3 +18,6 @@ tokenizers.workspace = true
 clap_builder = { version = "4.4" }
 clap_lex = { version = "0.6" }
 tract-onnx = { path = "../../onnx", version = "=0.21.4-pre" }
+
+[profile.release]
+debug = true
