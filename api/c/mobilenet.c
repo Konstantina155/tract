@@ -238,10 +238,10 @@ main(int argc, char **argv)
         char *tokenizer_path;
         char *model_path= argv[1];
         if (strcmp(model_path, "albert") == 0) {
-            model_for_path = "/hdd/papafrkon/albert-base-v2/albert-base-v2.onnx";
-            tokenizer_path = "/hdd/papafrkon/dAIEdgeServer/models/albert-large-v2/test_data_set_0/tokenizer.json";
+            model_for_path = "../../../albert-base-v2/albert-base-v2.onnx";
+            tokenizer_path = "../../../dAIEdgeServer/models/albert-large-v2/test_data_set_0/tokenizer.json";
         } else if (strcmp(model_path, "cerebras-gpt") == 0) {
-            model_for_path = "/hdd/papafrkon/tract/examples/pytorch-albert-v2/cerebras-gpt/model.onnx";
+            model_for_path = "../../../cerebras-gpt/model.onnx";
             tokenizer_path = "../../../github_repo/InferONNX/models/cerebras-gpt-256M/test_data_set_0/tokenizer.json";
         } else if (strcmp(model_path, "qwen") == 0) {
             model_for_path = "../../../github_repo/InferONNX/models/qwen2.5-0.5B/qwen2.5-0.5B.onnx";
@@ -267,7 +267,7 @@ main(int argc, char **argv)
         if (is_albert) {
             tract_run_albert(model_for_path, tokenizer, tokenizer_size, &inference, NULL);
         } else {
-            tract_run_latest_models(model_for_path, tokenizer, tokenizer_size, &inference, 5);
+            tract_run_latest_models(model_for_path, tokenizer, tokenizer_size, &inference, 10);
         }
         gettimeofday(&t2_inf, NULL);
 
@@ -275,8 +275,8 @@ main(int argc, char **argv)
         elapsed_time += (t2_inf.tv_usec - t1_inf.tv_usec) / 1000.0;   // us to ms
 
         if (inference) {
-            fprintf(stderr, "%s\nInference time to run a model: %f ms\n", inference, elapsed_time);
-            free(inference);
+            fprintf(stderr, "%s!\nInference time to run a model: %f ms\n", inference, elapsed_time);
+            tract_free_cstring(inference);
         }
         free(tokenizer);
         tract_free_onig();
