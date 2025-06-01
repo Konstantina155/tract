@@ -596,7 +596,7 @@ pub unsafe extern "C" fn tract_run_gpt2(
             }
         };
 
-        for _ in current_ids.len()..num_tokens {
+        for _ in 0..num_tokens {
             let input_ids_tensor: Tensor = Array2::from_shape_vec(
                 (1, current_ids.len()),
                 current_ids.iter().map(|&x| x as i64).collect(),
@@ -753,7 +753,7 @@ pub unsafe extern "C" fn tract_run_latest_models(
             }
         };
 
-        for _ in current_ids.len()..num_tokens {
+        for _ in 0..num_tokens {
             let input_ids_tensor: Tensor = Array2::from_shape_vec(
                 (1, current_ids.len()),
                 current_ids.iter().map(|&x| x as i64).collect(),
