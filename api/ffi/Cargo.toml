@@ -19,8 +19,8 @@ crate-type = ["staticlib"]
 maintenance = { status = "actively-developed" }
 
 [dependencies]
-jemallocator = "0.3"
-jemalloc-ctl = "0.3"
+jemallocator = "0.5"
+jemalloc-ctl = "0.5"
 onig_sys = "69.9.1"
 aes-gcm = "0.9"
 hex = "0.4"
