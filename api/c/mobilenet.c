@@ -429,7 +429,7 @@ main(int argc, char **argv)
             if (is_albert) {
                     tract_run_albert(model_for_path, tokenizer, tokenizer_size, &inference, params, inference_models ? &inference_models : NULL);
             } else {
-                tract_run_latest_models(model_for_path, tokenizer, tokenizer_size, &inference, params, params_weights, 5, inference_models ? &inference_models : NULL);
+                tract_run_latest_models(model_for_path, tokenizer, tokenizer_size, &inference, params, params_weights, 5, "Hi", inference_models ? &inference_models : NULL);
             }
             gettimeofday(&t2_inf, NULL);
             elapsed_time = (t2_inf.tv_sec - t1_inf.tv_sec) * 1000.0;      // sec to ms
