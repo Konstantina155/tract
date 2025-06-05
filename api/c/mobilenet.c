@@ -197,6 +197,7 @@ write_to_buffer(char *filename)
         fclose(fd);
         return NULL;
     }
+    data[file_size] = 0;
     fclose(fd);
 
     return data;
@@ -244,14 +245,23 @@ main(int argc, char **argv)
             model_for_path = "../../../cerebras-gpt/model.onnx";
             tokenizer_path = "../../../github_repo/InferONNX/models/cerebras-gpt-256M/test_data_set_0/tokenizer.json";
         } else if (strcmp(model_path, "qwen") == 0) {
-            model_for_path = "../../../github_repo/InferONNX/models/qwen2.5-0.5B/qwen2.5-0.5B.onnx";
-            tokenizer_path = "../../../github_repo/InferONNX/models/qwen2.5-0.5B/test_data_set_0/tokenizer.json";
+            model_for_path = "../../../qwen2.5-0.5B/qwen2.5-0.5B.onnx";
+            tokenizer_path = "../../../qwen2.5-0.5B/test_data_set_0/tokenizer.json";
         } else if (strcmp(model_path, "llama") == 0) {
-            model_for_path = "../../../github_repo/InferONNX/models/llama3.2-1B/llama3.2-1B.onnx";
-            tokenizer_path = "../../../github_repo/InferONNX/models/llama3.2-1B/test_data_set_0/tokenizer.json";
+            model_for_path = "../../../llama3.2-1B/llama3.2-1B.onnx";
+            tokenizer_path = "../../../llama3.2-1B/test_data_set_0/tokenizer.json";
         } else if (strcmp(model_path, "deepseek") == 0) {
-            model_for_path = "../../../github_repo/InferONNX/models/deepseek-coder-1.3b-base/deepseek-coder-1.3b-base.onnx";
-            tokenizer_path = "../../../github_repo/InferONNX/models/deepseek-coder-1.3b-base/test_data_set_0/tokenizer.json";
+            model_for_path = "../../../deepseek-coder-1.3b-base/deepseek-coder-1.3b-base.onnx";
+            tokenizer_path = "../../../deepseek-coder-1.3b-base/test_data_set_0/tokenizer.json";
+        } else if (strcmp(model_path, "tiny-llama") == 0) {
+            model_for_path = "../../../tinyLlama-1.1B/model.onnx";
+            tokenizer_path = "../../../tinyLlama-1.1B/test_data_set_0/tokenizer.json";
+        } else if (strcmp(model_path, "teeny-tiny-llama") == 0) {
+            model_for_path = "../../../teeny-tiny-llama-460M/model.onnx";
+            tokenizer_path = "../../../teeny-tiny-llama-460M/test_data_set_0/tokenizer.json";   
+        } else if (strcmp(model_path, "falcon") == 0) {
+            model_for_path = "../../../falcon3-1B/model.onnx";
+            tokenizer_path = "../../../falcon3-1B/tokenizer.json";        
         } else {
             fprintf(stderr, "Wrong NLP model!\n");
             return 1;
@@ -267,7 +277,7 @@ main(int argc, char **argv)
         if (is_albert) {
             tract_run_albert(model_for_path, tokenizer, tokenizer_size, &inference, NULL);
         } else {
-            tract_run_latest_models(model_for_path, tokenizer, tokenizer_size, &inference, 10);
+            tract_run_latest_models(model_for_path, tokenizer, tokenizer_size, &inference, 5, "Hi");
         }
         gettimeofday(&t2_inf, NULL);
 

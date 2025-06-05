@@ -461,6 +461,7 @@ pub unsafe extern "C" fn tract_run_gpt2(
     tokenizer_buffer_size: usize,
     inference: *mut *mut c_char,
     num_tokens: usize,
+    prompt: *const c_char,
     inference_model: *mut *mut MyInferenceModel
 ) -> TRACT_RESULT  {
     // Define the result to be returned
@@ -477,9 +478,9 @@ pub unsafe extern "C" fn tract_run_gpt2(
             Err(_) => return Err(anyhow::anyhow!("Failed to read tokenizer")),
         };
 
-        let prompt = "Hello, how are you today?";
-
-        let tokenizer_output_result = tokenizer.encode(prompt, true);
+        let prompt_cstr = unsafe { CStr::from_ptr(prompt) };
+        let prompt_str = prompt_cstr.to_str()?;
+        let tokenizer_output_result = tokenizer.encode(prompt_str, true);
         let tokenizer_output = match tokenizer_output_result {
             Ok(output) => output,
             Err(_) => return Err(anyhow::anyhow!("Failed to encode text")),
@@ -597,7 +598,8 @@ pub unsafe extern "C" fn tract_run_latest_models(
     tokenizer_buffer: *const u8,
     tokenizer_buffer_size: usize,
     inference: *mut *mut c_char,
-    num_tokens: usize
+    num_tokens: usize,
+    prompt: *const c_char,
 ) -> TRACT_RESULT {
     // Define the result to be returned
     let result = (|| -> Result<(), anyhow::Error> {
@@ -613,9 +615,9 @@ pub unsafe extern "C" fn tract_run_latest_models(
             Err(_) => return Err(anyhow::anyhow!("Failed to read tokenizer")),
         };
 
-        let prompt = "Hello, how are you today?";
-
-        let tokenizer_output_result = tokenizer.encode(prompt, true);
+        let prompt_cstr = unsafe { CStr::from_ptr(prompt) };
+        let prompt_str = prompt_cstr.to_str()?;
+        let tokenizer_output_result = tokenizer.encode(prompt_str, true);
         let tokenizer_output = match tokenizer_output_result {
             Ok(output) => output,
             Err(_) => return Err(anyhow::anyhow!("Failed to encode text")),
