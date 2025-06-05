@@ -400,6 +400,60 @@ pub unsafe extern "C" fn tract_load_nlp_model(
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn tract_my_inference_model_input_count(
+    model: *const MyInferenceModel,
+    inputs: *mut usize,
+) -> TRACT_RESULT {
+    wrap(|| unsafe {
+        let model = &(*model);
+        *inputs = model.inputs.len();
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_my_inference_model_output_count(
+    model: *const MyInferenceModel,
+    outputs: *mut usize,
+) -> TRACT_RESULT {
+    wrap(|| unsafe {
+        let model = &(*model);
+        *outputs = model.outputs.len();
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_my_inference_model_input_name(
+    model: *const MyInferenceModel,
+    input: usize,
+    name: *mut *mut c_char,
+) -> TRACT_RESULT {
+    wrap(|| unsafe {
+        *name = std::ptr::null_mut();
+        let m = &(*model);
+        let node = m.inputs[input].node;
+        *name = CString::new(&*m.node(node).name.to_string())?.into_raw();
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_my_inference_model_output_name(
+    model: *const MyInferenceModel,
+    output: usize,
+    name: *mut *mut i8,
+) -> TRACT_RESULT {
+    wrap(|| unsafe {
+        *name = std::ptr::null_mut();
+        let m = &(*model);
+        let node = m.outputs[output].node;
+        *name = CString::new(&*m.node(node).name.to_string())?.into_raw();
+        Ok(())
+    })
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn tract_run_albert(
     model_path: *const c_char,
     tokenizer_buffer: *const u8,

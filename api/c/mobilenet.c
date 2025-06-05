@@ -319,7 +319,7 @@ main(int argc, char **argv)
     fprintf(stderr, "\n");
 
     if (strcmp(argv[2], "tokenizer.json") == 0) {
-        const char *tag_message = "108588b3719ee19b8b4d37fb7250cdbe";
+        const char *tag_message = "7c24880645665de2ce9fafd392e81f3d";
         tag = (uint8_t *)malloc(TAG_BYTES * 2);
         if (!tag) {
             fprintf(stderr, "Memory allocation for tag failed\n");
@@ -341,7 +341,7 @@ main(int argc, char **argv)
         char *model_path= argv[1];
         EncryptionParameters *params_weights = NULL;
         uint8_t *tag_weights = NULL, *key_weights = NULL, *iv_weights = NULL, *aad_weights = NULL;
-        if (strcmp(model_path, "albert") != 0 && strcmp(model_path, "cerebras-gpt") != 0) {
+        if (strcmp(model_path, "albert") != 0 && strcmp(model_path, "cerebras-gpt") != 0 && strcmp(model_path, "cerebras-gpt-111") != 0) {
             params_weights = (EncryptionParameters *)malloc(sizeof(EncryptionParameters));
             if (!params_weights) {
                 fprintf(stderr, "Memory allocation for params_weights failed\n");
@@ -390,23 +390,26 @@ main(int argc, char **argv)
         char *model_for_path = NULL, *model_for_path_weights = NULL;
         char *tokenizer_path;
         if (strcmp(model_path, "albert") == 0) {
-            model_for_path = "/hdd/papafrkon/albert-base-v2/albert-base-v2.onnx";
-                tokenizer_path = "/hdd/papafrkon/dAIEdgeServer/models/albert-large-v2/test_data_set_0/tokenizer.json";
+            model_for_path = "../../../albert-base-v2/albert-base-v2.onnx";
+                tokenizer_path = "../../../dAIEdgeServer/models/albert-large-v2/test_data_set_0/tokenizer.json";
+        } else if (strcmp(model_path, "cerebras-gpt-111") == 0) {
+            model_for_path = "../../../cerebras-gpt-111M/cerebras-gpt-111M.onnx";
+            tokenizer_path = "../../../cerebras-gpt-256M/test_data_set_0/tokenizer.json";
         } else if (strcmp(model_path, "cerebras-gpt") == 0) {
-            model_for_path = "../../../github_repo/InferONNX/models/cerebras-gpt-256M/cerebras-gpt-256M.onnx";
-            tokenizer_path = "../../../github_repo/InferONNX/models/cerebras-gpt-256M/test_data_set_0/tokenizer.json";
+            model_for_path = "../../../cerebras-gpt-256M/cerebras-gpt-256M.onnx";
+            tokenizer_path = "../../../cerebras-gpt-256M/test_data_set_0/tokenizer.json";
         } else if (strcmp(model_path, "qwen") == 0) {
-            model_for_path = "../../../github_repo/InferONNX/models/qwen2.5-0.5B/qwen2.5-0.5B.onnx";
+            model_for_path = "../../../qwen2.5-0.5B/qwen2.5-0.5B.onnx";
             model_for_path_weights = "./model.onnx_data";
-            tokenizer_path = "../../../github_repo/InferONNX/models/qwen2.5-0.5B/test_data_set_0/tokenizer.json";
+            tokenizer_path = "../../../qwen2.5-0.5B/test_data_set_0/tokenizer.json";
         } else if (strcmp(model_path, "llama") == 0) {
-            model_for_path = "../../../github_repo/InferONNX/models/llama3.2-1B/llama3.2-1B.onnx";
-            model_for_path_weights = "../../../github_repo/InferONNX/models/llama3.2-1B/model.onnx_data";
-            tokenizer_path = "../../../github_repo/InferONNX/models/llama3.2-1B/test_data_set_0/tokenizer.json";
+            model_for_path = "../../../llama3.2-1B/llama3.2-1B.onnx";
+            model_for_path_weights = "../../../llama3.2-1B/model.onnx_data";
+            tokenizer_path = "../../../llama3.2-1B/test_data_set_0/tokenizer.json";
         } else if (strcmp(model_path, "deepseek") == 0) {
-            model_for_path = "../../../github_repo/InferONNX/models/deepseek-coder-1.3b-base/deepseek-coder-1.3b-base.onnx";
-            model_for_path_weights = "../../../github_repo/InferONNX/models/deepseek-coder-1.3b-base/model.onnx_data";
-            tokenizer_path = "../../../github_repo/InferONNX/models/deepseek-coder-1.3b-base/test_data_set_0/tokenizer.json";
+            model_for_path = "../../../deepseek-coder-1.3b-base/deepseek-coder-1.3b-base.onnx";
+            model_for_path_weights = "../../../deepseek-coder-1.3b-base/model.onnx_data";
+            tokenizer_path = "../../../deepseek-coder-1.3b-base/test_data_set_0/tokenizer.json";
         } else {
             fprintf(stderr, "Wrong NLP model!\n");
             return 1;
@@ -418,19 +421,46 @@ main(int argc, char **argv)
             uint8_t* tokenizer = write_to_buffer(tokenizer_path);
         
             char *inference = NULL;
-            MyInferenceModel *inference_models = NULL;
+            MyInferenceModel **inference_models = malloc(2 * sizeof(MyInferenceModel *)), *inference_model = NULL;
+            inference_models[0] = NULL;
+            inference_models[1] = NULL;
             int is_albert = strstr(model_path, "albert") != NULL;
 
-#if USE_MEMORY_ONLY == 1        
-        tract_load_nlp_model(model_for_path, params, params_weights, &inference_models);
-        assert(inference_models);
+#if USE_MEMORY_ONLY == 1
+            uintptr_t num_inputs = 0;
+            uintptr_t num_outputs = 0;
+            char *input_name = NULL;
+            int8_t *output_name = NULL;
+
+            tract_load_nlp_model(model_for_path, params, params_weights, &inference_model);
+            assert(inference_model);
+
+            tract_my_inference_model_input_count(inference_model, &num_inputs);
+            tract_my_inference_model_output_count(inference_model, &num_outputs);
+            fprintf(stderr, "Info about model: input_num: %ld, output_num: %ld\n", num_inputs, num_outputs);
+            for (int i = 0; i < (int)num_inputs; i++) {
+                input_name = NULL;
+                tract_my_inference_model_input_name(inference_model, i, &input_name);
+                fprintf(stderr, "Input[%d]: %s\n", i, input_name);
+                tract_free_cstring(input_name);
+            }
+            for (int i = 0; i < (int)num_outputs; i++) {
+                output_name = NULL;
+                tract_my_inference_model_output_name(inference_model, i, &output_name);
+                fprintf(stderr, "Output[%d]: %s\n", i, output_name);
+                tract_free_cstring(output_name);
+            }
 #endif
             gettimeofday(&t1_inf, NULL);
             if (is_albert) {
-                    tract_run_albert(model_for_path, tokenizer, tokenizer_size, &inference, params, inference_models ? &inference_models : NULL);
+                    tract_run_albert(model_for_path, tokenizer, tokenizer_size, &inference, params, inference_model ? &inference_model : NULL);
             } else {
-                tract_run_latest_models(model_for_path, tokenizer, tokenizer_size, &inference, params, params_weights, 5, "Hi", inference_models ? &inference_models : NULL);
+                tract_run_latest_models(model_for_path, tokenizer, tokenizer_size, &inference, params, params_weights, 5, "Hi", inference_model ? &inference_model : NULL);
             }
+            if (inference_model) {
+                inference_models[0] = inference_model;
+            }
+            free(inference_models);
             gettimeofday(&t2_inf, NULL);
             elapsed_time = (t2_inf.tv_sec - t1_inf.tv_sec) * 1000.0;      // sec to ms
             elapsed_time += (t2_inf.tv_usec - t1_inf.tv_usec) / 1000.0;   // us to ms
