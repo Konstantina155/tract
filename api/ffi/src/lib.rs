@@ -339,7 +339,10 @@ pub unsafe extern "C" fn tract_run_albert(
 ) -> TRACT_RESULT {
     // Define the result to be returned
     let result = (|| -> Result<(), anyhow::Error> {
-        print_memory("Start albert");
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("Start albert");
+        }
         let tokenizer_data = unsafe {
             slice::from_raw_parts(tokenizer_buffer, tokenizer_buffer_size)
         };
@@ -441,13 +444,19 @@ pub unsafe extern "C" fn tract_run_albert(
         let c_word = CString::new(formatted_string)?;
         *inference = c_word.into_raw(); // Pass the result back
 
-        print_memory("Before drop");
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("Before drop");
+        }
         drop(model);
         drop(tokenizer);
         drop(tokenizer_output);
         drop(outputs);
-        print_memory("After drop");
-
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("After drop");
+        }
+        
         Ok(())
     })();
 
@@ -466,7 +475,10 @@ pub unsafe extern "C" fn tract_run_gpt2(
 ) -> TRACT_RESULT  {
     // Define the result to be returned
     let result = (|| -> Result<(), anyhow::Error> {
-        print_memory("Start gpt2");
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("Start gpt2");
+        }
         let tokenizer_data = unsafe {
             slice::from_raw_parts(tokenizer_buffer, tokenizer_buffer_size)
         };
@@ -563,9 +575,15 @@ pub unsafe extern "C" fn tract_run_gpt2(
             current_ids.push(next_token_id);
             current_attention_mask.push(1);
 
-            print_memory("Before dropping outputs");
+            #[cfg(not(feature = "use_sys_time"))]
+            {
+                print_memory("Before dropping outputs");
+            }
             drop(outputs);
-            print_memory("After dropping outputs");
+            #[cfg(not(feature = "use_sys_time"))]
+            {
+                print_memory("After dropping outputs");
+            }
         }
 
         let generated_text = tokenizer.decode(&current_ids, true).map_err(|e| {
@@ -580,11 +598,17 @@ pub unsafe extern "C" fn tract_run_gpt2(
         let c_word = CString::new(formatted_string)?;
         *inference = c_word.into_raw(); // Pass the result back
         
-        print_memory("Before drop");
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("Before drop");
+        }
         drop(model);
         drop(tokenizer);
         drop(tokenizer_output);
-        print_memory("After drop");
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("After drop");
+        }
 
         Ok(())
     })();
@@ -603,7 +627,10 @@ pub unsafe extern "C" fn tract_run_latest_models(
 ) -> TRACT_RESULT {
     // Define the result to be returned
     let result = (|| -> Result<(), anyhow::Error> {
-        print_memory("Start latest_model");
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("Start latest_model");
+        }    
         let tokenizer_data = unsafe {
             slice::from_raw_parts(tokenizer_buffer, tokenizer_buffer_size)
         };
@@ -712,9 +739,15 @@ pub unsafe extern "C" fn tract_run_latest_models(
             current_attention_mask.push(1);
             current_position_ids.push(current_position_ids.last().unwrap() + 1);
 
-            print_memory("Before dropping outputs");
+            #[cfg(not(feature = "use_sys_time"))]
+            {
+                print_memory("Before dropping outputs");
+            }
             drop(outputs);
-            print_memory("After dropping outputs");
+            #[cfg(not(feature = "use_sys_time"))]
+            {
+                print_memory("After dropping outputs");
+            }
         }
 
         let generated_text = tokenizer.decode(&current_ids, true).map_err(|e| {
@@ -729,11 +762,17 @@ pub unsafe extern "C" fn tract_run_latest_models(
         let c_word = CString::new(formatted_string)?;
         *inference = c_word.into_raw(); // Pass the result back
 
-        print_memory("Before drop");
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("Before drop");
+        }
         drop(model);
         drop(tokenizer);
         drop(tokenizer_output);
-        print_memory("After drop");
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("After drop");
+        }
 
         Ok(())
     })();
