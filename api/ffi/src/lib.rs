@@ -326,7 +326,10 @@ pub extern "C" fn tract_free_onig() {
     unsafe {
         onig_sys::onig_end();
     }
-    print_memory("After onig_end");
+    #[cfg(not(feature = "use_sys_time"))]
+    {
+        print_memory("After onig_end");
+    }
 }       
 
 #[no_mangle]
@@ -456,7 +459,7 @@ pub unsafe extern "C" fn tract_run_albert(
         {
             print_memory("After drop");
         }
-        
+
         Ok(())
     })();
 
