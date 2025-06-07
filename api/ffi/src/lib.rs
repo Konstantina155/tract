@@ -328,7 +328,6 @@ fn open_weights_file(
     let file = match File::open(&full_path) {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            println!("Weights file not found at {:?}", full_path);
             return Ok(Vec::new());
         }
         Err(e) => return Err(e).context(format!("Opening {:?}", full_path)).map_err(Into::into),
