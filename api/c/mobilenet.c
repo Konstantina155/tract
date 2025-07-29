@@ -415,8 +415,8 @@ main(int argc, char **argv)
             return 1;
         }
 
-        int nums = 1;
-        for (int i = 0; i < nums; i++) {
+        int runs = 1;
+        for (int i = 0; i < runs; i++) {
             int tokenizer_size = read_tokenizer(tokenizer_path);
             uint8_t* tokenizer = write_to_buffer(tokenizer_path);
         

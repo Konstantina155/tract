@@ -193,15 +193,15 @@ enum TRACT_RESULT tract_run_gpt2(const char *model_path,
                                  const char *prompt,
                                  struct MyInferenceModel **inference_model);
 
-enum TRACT_RESULT tract_run_latest_models(const char *model_path,
-                                          const uint8_t *tokenizer_buffer,
-                                          uintptr_t tokenizer_buffer_size,
-                                          char **inference,
-                                          const EncryptionParameters *params,
-                                          const EncryptionParameters *params_weights,
-                                          uintptr_t num_tokens,
-                                          const char *prompt,
-                                          struct MyInferenceModel **inference_model);
+enum TRACT_RESULT tract_run_latest_models_partitions(const char *model_path,
+                                                     const uint8_t *tokenizer_buffer,
+                                                     uintptr_t tokenizer_buffer_size,
+                                                     char **inference,
+                                                     const EncryptionParameters *params,
+                                                     const EncryptionParameters *params_weights,
+                                                     uintptr_t num_tokens,
+                                                     const char *prompt,
+                                                     struct MyInferenceModel **inference_model);
 
 /**
  * Creates an instance of an ONNX framework and parser that can be used to load models.

@@ -555,6 +555,7 @@ pub unsafe extern "C" fn tract_run_albert(
         .into();
 
         let outputs = model.run(tvec!(input_ids_tensor.into(), attention_mask_tensor.into(), token_type_ids_tensor.into()))?;
+        let s: String = outputs;
         let logits = outputs[0].to_array_view::<f32>()?;
         let logits = logits.slice(s![0, mask_pos, ..]);
         let word_id = logits.iter().zip(0..).max_by(|a, b| a.0.partial_cmp(b.0).unwrap()).unwrap().1;
@@ -744,17 +745,193 @@ pub unsafe extern "C" fn tract_run_gpt2(
     handle_error(result)
 }
 
+// #[no_mangle]
+// pub unsafe extern "C" fn tract_run_latest_models(
+//     model_path: *const c_char,
+//     tokenizer_buffer: *const u8,
+//     tokenizer_buffer_size: usize,
+//     inference: *mut *mut c_char,
+//     params: *const tract_core::framework::EncryptionParameters,
+//     params_weights: *const tract_core::framework::EncryptionParameters,
+//     num_tokens: usize,
+//     prompt: *const c_char,
+//     inference_model: *mut *mut MyInferenceModel
+// ) -> TRACT_RESULT {
+//     // Define the result to be returned
+//     let result = (|| -> Result<(), anyhow::Error> {
+//         #[cfg(not(feature = "use_sys_time"))]
+//         {
+//             print_memory("Start latest_model");
+//         }
+//         let tokenizer_data = unsafe {
+//             slice::from_raw_parts(tokenizer_buffer, tokenizer_buffer_size)
+//         };
+
+//         // Create the tokenizer from bytes
+//         let tokenizer_result = Tokenizer::from_bytes(tokenizer_data);
+//         let tokenizer = match tokenizer_result {
+//             Ok(tokenizer) => tokenizer,
+//             Err(_) => return Err(anyhow::anyhow!("Failed to read tokenizer")),
+//         };
+
+//         let prompt_cstr = unsafe { CStr::from_ptr(prompt) };
+//         let prompt_str = prompt_cstr.to_str()?;
+//         let tokenizer_output_result = tokenizer.encode(prompt_str, true);
+//         let tokenizer_output = match tokenizer_output_result {
+//             Ok(output) => output,
+//             Err(_) => return Err(anyhow::anyhow!("Failed to encode text")),
+//         };
+
+//         let mut current_ids: Vec<u32> = tokenizer_output.get_ids().to_vec();
+//         let mut current_attention_mask: Vec<u32> = tokenizer_output.get_attention_mask().to_vec();
+//         let mut current_position_ids: Vec<u32> = (0..current_ids.len() as u32).collect();
+
+//         let model = {
+//             #[cfg(feature = "use_sys_time")]
+//             {
+//                 let shape_input_ids = [1, current_ids.len()];
+//                 let shape_attention_mask = [1, current_attention_mask.len()];
+//                 let shape_position_ids = [1, current_position_ids.len()];
+//                 if inference_model.is_null() {
+//                     let path = CStr::from_ptr(model_path).to_str()?;
+//                     let model_dir = PathBuf::from_str(path)?;
+//                     let decrypted = open_weights_file(Some(path), Some(params_weights))?;
+//                     let weights_data = if decrypted.is_empty() {
+//                         None
+//                     } else {
+//                         Some(decrypted)
+//                     };
+
+//                     tract_onnx::onnx().model_for_path(model_dir, Some(params), weights_data.as_deref())?
+//                         .with_input_fact(0, i64::fact(shape_input_ids).into())?
+//                         .with_input_fact(1, i64::fact(shape_attention_mask).into())?
+//                         .with_input_fact(2, i64::fact(shape_position_ids).into())?
+//                         .into_typed()?
+//                         .into_runnable()?
+//                 } else {
+//                     Box::from_raw(*inference_model)
+//                         .with_input_fact(0, i64::fact(shape_input_ids).into())?
+//                         .with_input_fact(1, i64::fact(shape_attention_mask).into())?
+//                         .with_input_fact(2, i64::fact(shape_position_ids).into())?
+//                         .into_typed()?
+//                         .into_runnable()?
+//                 }
+//             }
+
+//             #[cfg(not(feature = "use_sys_time"))]
+//             {
+//                 if inference_model.is_null() {
+//                     let path = CStr::from_ptr(model_path).to_str()?;
+//                     let model_dir = PathBuf::from_str(path)?;
+//                     let decrypted = open_weights_file(Some(path), Some(params_weights))?;
+//                     let weights_data = if decrypted.is_empty() {
+//                         None
+//                     } else {
+//                         Some(decrypted)
+//                     };
+
+//                     tract_onnx::onnx().model_for_path(model_dir, Some(params), weights_data.as_deref())?
+//                         .into_optimized()?
+//                         .into_runnable()?
+//                 } else {
+//                     Box::from_raw(*inference_model).into_optimized()?.into_runnable()?
+//                 }
+//             }
+//         };
+
+//         for _ in 0..num_tokens {
+//             let input_ids_tensor: Tensor = Array2::from_shape_vec(
+//                 (1, current_ids.len()),
+//                 current_ids.iter().map(|&x| x as i64).collect(),
+//             )?.into();
+
+//             let attention_mask_tensor: Tensor = Array2::from_shape_vec(
+//                 (1, current_attention_mask.len()),
+//                 current_attention_mask.iter().map(|&x| x as i64).collect(),
+//             )?.into();
+
+//             let position_ids_tensor: Tensor = Array2::from_shape_vec(
+//                 (1, current_position_ids.len()),
+//                 current_position_ids.iter().map(|&x| x as i64).collect(),
+//             )?.into();
+
+//             let outputs = model.run(tvec!(input_ids_tensor.into(), attention_mask_tensor.into(), position_ids_tensor.into()))?;
+//             let logits = outputs[0].to_array_view::<f32>()?;
+//             let last_logits = logits.slice(s![0, -1, ..]);
+
+//             // Top-k sampling
+//             let k = 10;
+//             let mut scored: Vec<(usize, f32)> = last_logits
+//                 .iter()
+//                 .cloned()
+//                 .enumerate()
+//                 .collect();
+
+//             scored.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+//             let top_k = &scored[..k.min(scored.len())];
+//             let next_token_id = top_k
+//                 .choose(&mut thread_rng())
+//                 .map(|(idx, _)| *idx)
+//                 .unwrap() as u32;
+
+//             // Stop if model outputs <|endoftext|> token (50256 in GPT-2)
+//             let eos_token_id = tokenizer.get_vocab(true).get("<|endoftext|>").cloned().unwrap_or(50256);
+//             if next_token_id == eos_token_id {
+//                 break;
+//             }
+
+//             current_ids.push(next_token_id);
+//             current_attention_mask.push(1);
+//             current_position_ids.push(current_position_ids.last().unwrap() + 1);
+
+//             #[cfg(not(feature = "use_sys_time"))]
+//             {
+//                 print_memory("Before dropping outputs");
+//             }
+//             drop(outputs);
+//             #[cfg(not(feature = "use_sys_time"))]
+//             {
+//                 print_memory("After dropping outputs");
+//             }
+//         }
+
+//         let generated_text = tokenizer.decode(&current_ids, true).map_err(|e| {
+//             anyhow::anyhow!("Failed to decode tokenizer output: {}", e)
+//         })?;
+
+//         // Handle the Option and create a CString
+//         let re = regex::Regex::new(r"\s+")
+//             .map_err(|e| anyhow::anyhow!("Failed to compile regex: {}", e))?;
+//         let clean_string = re.replace_all(generated_text.trim(), " ").to_string();
+//         let formatted_string = format!("Inference: {}", clean_string);
+//         let c_word = CString::new(formatted_string)?;
+//         *inference = c_word.into_raw(); // Pass the result back
+        
+//         #[cfg(not(feature = "use_sys_time"))]
+//         {
+//             print_memory("Before drop");
+//         }
+//         drop(model);
+//         drop(tokenizer);
+//         drop(tokenizer_output);
+//         #[cfg(not(feature = "use_sys_time"))]
+//         {
+//             print_memory("After drop");
+//         }
+
+//         Ok(())
+//     })();
+
+//     handle_error(result)
+// }
+
 #[no_mangle]
-pub unsafe extern "C" fn tract_run_latest_models(
+pub unsafe extern "C" fn tract_runable_run(
     model_path: *const c_char,
-    tokenizer_buffer: *const u8,
-    tokenizer_buffer_size: usize,
     inference: *mut *mut c_char,
-    params: *const tract_core::framework::EncryptionParameters,
-    params_weights: *const tract_core::framework::EncryptionParameters,
     num_tokens: usize,
     prompt: *const c_char,
-    inference_model: *mut *mut MyInferenceModel
+    values: *mut *mut *mut TractValue,
 ) -> TRACT_RESULT {
     // Define the result to be returned
     let result = (|| -> Result<(), anyhow::Error> {
@@ -918,6 +1095,229 @@ pub unsafe extern "C" fn tract_run_latest_models(
             print_memory("After drop");
         }
 
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_value_from_bytes_llms(
+    tokenizer_buffer: *const u8,
+    tokenizer_buffer_size: usize,
+    prompt: *const c_char,
+    values: *mut *mut *mut TractValue,
+) -> TRACT_RESULT {
+    let result = (|| -> Result<(), anyhow::Error> {
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("Start latest_model");
+        }
+        let tokenizer_data = unsafe {
+            slice::from_raw_parts(tokenizer_buffer, tokenizer_buffer_size)
+        };
+
+        // Create the tokenizer from bytes
+        let tokenizer_result = Tokenizer::from_bytes(tokenizer_data);
+        let tokenizer = match tokenizer_result {
+            Ok(tokenizer) => tokenizer,
+            Err(_) => return Err(anyhow::anyhow!("Failed to read tokenizer")),
+        };
+
+        let prompt_cstr = unsafe { CStr::from_ptr(prompt) };
+        let prompt_str = prompt_cstr.to_str()?;
+        let tokenizer_output_result = tokenizer.encode(prompt_str, true);
+        let tokenizer_output = match tokenizer_output_result {
+            Ok(output) => output,
+            Err(_) => return Err(anyhow::anyhow!("Failed to encode text")),
+        };
+
+        let input_ids: Vec<u32> = tokenizer_output.get_ids().to_vec();
+        let attention_mask: Vec<u32> = tokenizer_output.get_attention_mask().to_vec();
+        let position_ids: Vec<u32> = (0..input_ids.len() as u32).collect();
+
+        let tensors: Vec<&[u32]> = vec![&input_ids, &attention_mask, &position_ids];
+
+        let num_tensors = tensors.len();
+        let datum_type = DatumType::U32;
+        for i in 0..num_tensors {
+            *values.add(i) = std::ptr::null_mut();
+            let tensor_slice = tensors[i];
+            let len = tensor_slice.len();
+            let data = std::slice::from_raw_parts(tensor_slice.as_ptr() as *const u8, len * datum_type.size_of());
+            let it = Value::from_bytes(datum_type, &[tensor_slice.len()], data)?;
+            *values.add(i) = Box::into_raw(Box::new(TractValue(it)));
+        }
+
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("Before drop in tract_value_from_bytes_llm");
+        }
+        drop(tokenizer);
+        drop(tokenizer_output);
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("After drop in tract_value_from_bytes_llm");
+        }
+        
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn generate_text(
+    tokenizer_buffer: *const u8,
+    tokenizer_buffer_size: usize,
+    inference: *mut *mut c_char
+) -> TRACT_RESULT {
+    // Define the result to be returned
+    let result = (|| -> Result<(), anyhow::Error> {
+        // Create the tokenizer from bytes
+        let tokenizer_result = Tokenizer::from_bytes(tokenizer_data);
+        let tokenizer = match tokenizer_result {
+            Ok(tokenizer) => tokenizer,
+            Err(_) => return Err(anyhow::anyhow!("Failed to read tokenizer")),
+        };
+
+        let generated_text = tokenizer.decode(&current_ids, true).map_err(|e| {
+            anyhow::anyhow!("Failed to decode tokenizer output: {}", e)
+        })?;
+
+        // Handle the Option and create a CString
+        let re = regex::Regex::new(r"\s+")
+            .map_err(|e| anyhow::anyhow!("Failed to compile regex: {}", e))?;
+        let clean_string = re.replace_all(generated_text.trim(), " ").to_string();
+        let formatted_string = format!("Inference: {}", clean_string);
+        let c_word = CString::new(formatted_string)?;
+        *inference = c_word.into_raw(); // Pass the result back
+        
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("Before drop");
+        }
+        drop(tokenizer);
+        drop(tokenizer_output);
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("After drop");
+        }
+
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_latest_models_into_runnable(
+    model_path: *const c_char,
+    params: *const tract_core::framework::EncryptionParameters,
+    params_weights: *const tract_core::framework::EncryptionParameters,
+    inference_model: *mut *mut MyInferenceModel
+) -> TRACT_RESULT {
+    // Define the result to be returned
+    let result = (|| -> Result<(), anyhow::Error> {
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("Start latest_model");
+        }
+
+        let model = {
+            #[cfg(feature = "use_sys_time")]
+            {
+                let value_array: *mut *mut TractValue = *inputs;
+                let mut lengths = Vec::with_capacity(3);
+                for i in 0..3 {
+                    let tract_value_ptr = *value_array.add(i);
+                    if !tract_value_ptr.is_null() {
+                        let tract_value_ref = &*tract_value_ptr;
+                        let len = match &tract_value_ref.0 {
+                            Value::Tensor(t) => t.shape().iter().product::<usize>(),
+                            _ => 0,
+                        };
+                        lengths.push(len);
+                    } else {
+                        lengths.push(0);
+                    }
+                }
+
+                let shape_input_ids = [1, lengths[0]];
+                let shape_attention_mask = [1, lengths[1]];
+                let shape_position_ids = [1, lengths[2]];
+                if inference_model.is_null() {
+                    let path = CStr::from_ptr(model_path).to_str()?;
+                    let model_dir = PathBuf::from_str(path)?;
+                    let decrypted = open_weights_file(Some(path), Some(params_weights))?;
+                    let weights_data = if decrypted.is_empty() {
+                        None
+                    } else {
+                        Some(decrypted)
+                    };
+
+                    tract_onnx::onnx().model_for_path(model_dir, Some(params), weights_data.as_deref())?
+                        .with_input_fact(0, i64::fact(shape_input_ids).into())?
+                        .with_input_fact(1, i64::fact(shape_attention_mask).into())?
+                        .with_input_fact(2, i64::fact(shape_position_ids).into())?
+                        .into_typed()?
+                        .into_runnable()?
+                } else {
+                    Box::from_raw(*inference_model)
+                        .with_input_fact(0, i64::fact(shape_input_ids).into())?
+                        .with_input_fact(1, i64::fact(shape_attention_mask).into())?
+                        .with_input_fact(2, i64::fact(shape_position_ids).into())?
+                        .into_typed()?
+                        .into_runnable()?
+                }
+            }
+
+            #[cfg(not(feature = "use_sys_time"))]
+            {
+                if inference_model.is_null() {
+                    let path = CStr::from_ptr(model_path).to_str()?;
+                    let model_dir = PathBuf::from_str(path)?;
+                    let decrypted = open_weights_file(Some(path), Some(params_weights))?;
+                    let weights_data = if decrypted.is_empty() {
+                        None
+                    } else {
+                        Some(decrypted)
+                    };
+
+                    tract_onnx::onnx().model_for_path(model_dir, Some(params), weights_data.as_deref())?
+                        .into_optimized()?
+                        .into_runnable()?
+                } else {
+                    Box::from_raw(*inference_model).into_optimized()?.into_runnable()?
+                }
+            }
+        };
+
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_latest_models_runnable_run(
+    runnable: *mut *mut Runnable,
+    inputs: *mut *mut TractValue,
+    outputs: *mut *mut TractValue,
+) -> TRACT_RESULT {
+    // Define the result to be returned
+    let result = (|| -> Result<(), anyhow::Error> {
+        let values: Vec<_> = std::slice::from_raw_parts(inputs, state.input_count()?)
+            .iter()
+            .map(|tv| (**tv).0.clone())
+            .collect();
+            // Inside state_run
+        let values = state.run(values)?;
+        //After state_run
+        for (i, value) in values.into_iter().enumerate() {
+            *(outputs.add(i)) = Box::into_raw(Box::new(TractValue(value)))
+        }
+        //After for loop
         Ok(())
     })();
 
