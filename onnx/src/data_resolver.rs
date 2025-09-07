@@ -23,7 +23,6 @@ pub trait ModelDataResolver {
         offset: usize,
         length: Option<usize>,
         weights_decrypted: Option<&[u8]>
-        //params_weights: Option<*const tract_core::framework::EncryptionParameters>
     ) -> TractResult<()>;
 }
 
@@ -37,7 +36,6 @@ impl ModelDataResolver for FopenDataResolver {
         offset: usize,
         length: Option<usize>,
         _weights_decrypted: Option<&[u8]>
-        //_params_weights: Option<*const tract_core::framework::EncryptionParameters>
     ) -> TractResult<()> {
         let file = File::open(p).with_context(|| format!("Opening {p:?}"))?;
         let file_size = file.metadata()?.len() as usize;
@@ -69,12 +67,15 @@ impl ModelDataResolver for MmapDataResolver {
         length: Option<usize>,
         weights_decrypted: Option<&[u8]>
     ) -> TractResult<()> {
+        println!("here before weights_decrypted");
         if let Some(weights_decrypted) = weights_decrypted {
+            println!("hereee");
             match length {
                 Some(length) => buf.extend_from_slice(&weights_decrypted[offset..offset + length]),
                 None => buf.extend_from_slice(&weights_decrypted[offset..]),
             }
         } else {
+            println!("here before parse");
             bail!("no model path was specified in the parsing context, yet external data was detected. aborting");
         }      
         Ok(())

@@ -131,7 +131,6 @@ pub fn load_tensor(
     t: &TensorProto,
     path: Option<&str>,
     weights_decrypted: Option<&[u8]>
-    //params_weights: Option<*const tract_core::framework::EncryptionParameters>
 ) -> TractResult<Tensor> {
     // Inside the load_tensor in tensor.rs function
     let dt = DataType::from_i32(t.data_type).unwrap().try_into()?;
