@@ -20,6 +20,7 @@ where
     ) -> TractResult<TVec<OutletId>>;
 
     fn translate_model(&self, source: &Graph<TI1, O1>) -> TractResult<Graph<TI2, O2>> {
+        // Inside translate model function
         Ok(self.translate_model_with_mappings(source)?.0)
     }
 
@@ -27,6 +28,7 @@ where
         &self,
         source: &Graph<TI1, O1>,
     ) -> TractResult<(Graph<TI2, O2>, HashMap<OutletId, OutletId>)> {
+         // Inside translate model with mappings function
         let mut target = Graph::default();
         let mut mapping = HashMap::new();
         for old_id in source.eval_order()? {

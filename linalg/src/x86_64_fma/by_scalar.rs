@@ -5,6 +5,7 @@ ew_impl_wrap!(
     8,
     f32,
     fn run(x: &mut [f32], s: f32) {
+        // Inside in here when running the model
         debug_assert!(x.len() % Self::nr() == 0);
         debug_assert!(x.as_ptr() as usize % Self::alignment_bytes() == 0);
         unsafe { x86_64_avx_f32_mul_by_scalar_32n_run(x, s) }

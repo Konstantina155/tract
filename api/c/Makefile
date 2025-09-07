@@ -12,6 +12,8 @@ all: mobilenet
 mobilenet: tract.h libtract.a mobilenet.c
 	cc -g mobilenet.c -o mobilenet $(CFLAGS) -L. -I. -ltract -lm -lpthread -ldl
 
+build: tract.h libtract.a mobilenet.c
+
 libtract.a:
 	cargo build -p tract-ffi --release $(FEATURE_FLAG)
 	cp ../../target/release/libtract.a .

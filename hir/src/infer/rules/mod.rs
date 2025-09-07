@@ -68,6 +68,7 @@ pub trait InferenceRulesOp {
         model: &InferenceModel,
         node: &InferenceNode,
     ) -> TractResult<Option<InferenceModelPatch>> {
+        // Inside incorporate function in InferenceRulesOp in infer/rules/mod.rs
         Ok(None)
     }
 }
@@ -128,6 +129,7 @@ impl<O: InferenceRulesOp + Op> InferenceOp for O {
         model: &InferenceModel,
         node: &InferenceNode,
     ) -> TractResult<Option<InferenceModelPatch>> {
+        // Inside incorporate function in infer/rules/mod.rs
         self.incorporate(model, node)
     }
 }

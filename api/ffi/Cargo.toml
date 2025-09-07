@@ -19,12 +19,14 @@ crate-type = ["staticlib"]
 maintenance = { status = "actively-developed" }
 
 [dependencies]
+lazy_static = "1.4"
 jemallocator = "0.3"
 jemalloc-ctl = "0.3"
 rand = "0.8"
 regex = "1"
 onig_sys = "69.0"
 tokenizers.workspace = true
+smallvec.workspace = true
 memmap2.workspace = true
 clap_builder = { version = "4.4" }
 anyhow.workspace = true

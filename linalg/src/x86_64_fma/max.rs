@@ -7,6 +7,7 @@ reduce_impl_wrap!(
     f32::MIN,
     #[inline(never)]
     fn run(buf: &[f32], _: ()) -> f32 {
+        // Inside in here when running the model
         assert!(buf.len() % 32 == 0);
         assert!(buf.len() > 0);
         unsafe { x86_64_fma_max_f32_32n_run(buf) }

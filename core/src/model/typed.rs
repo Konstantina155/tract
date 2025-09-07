@@ -111,6 +111,7 @@ impl SpecialOps<TypedFact, Box<dyn TypedOp>> for TypedModel {
 
 impl TypedModel {
     pub fn into_optimized(mut self) -> TractResult<TypedModel> {
+        println!("Into optimized and declutter");
         self.declutter()?;
         self.optimize()?;
         Ok(self)
@@ -174,6 +175,7 @@ impl TypedModel {
 
     /// Perform declutter passes on the network.
     pub fn declutter(&mut self) -> TractResult<()> {
+        println!("Inside declutter");
         crate::optim::Optimizer::declutter().session().optimize(self)
     }
 
@@ -204,6 +206,7 @@ impl TypedModel {
 
     /// Translate the graph to locally optimized operators (LIR or MIR ops).
     pub fn optimize(&mut self) -> TractResult<()> {
+       println!("Inside codegen().optimize");
         crate::optim::Optimizer::codegen().optimize(self)
     }
 

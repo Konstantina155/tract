@@ -44,6 +44,7 @@ macro_rules! ew_impl {
             ew_impl_wrap!($ti, $func, $nr, $alignment_items, (),
                 #[inline(never)]
                 fn run(buf: &mut [$ti], _params: ()) {
+                    // Inside in here when running the model
                     unsafe { [<sys_ $func>]::$func(buf.as_mut_ptr(), buf.len()) }
                 }
             );
@@ -73,6 +74,7 @@ where
 {
     fn name(&self) -> &'static str;
     fn run(&self, vec: &mut [T]) -> TractResult<()> {
+        // Inside in here when running the model
         self.run_with_params(vec, Params::default())
     }
     fn run_with_params(&self, vec: &mut [T], params: Params) -> TractResult<()>;

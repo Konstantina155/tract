@@ -2,6 +2,7 @@ use crate::infer::*;
 use std::fmt;
 
 pub fn incorporate() -> Vec<Box<dyn IncorporatePass>> {
+    // Inside incorporate function in infer/optim.rs
     vec![Box::new(IncorporateOps)]
 }
 

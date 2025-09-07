@@ -262,15 +262,20 @@ use jemalloc_ctl::{epoch, stats};
 #[global_allocator]
 static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
-/// Run the Albert example from the tract-onnx crate.
+/// Additional code for llms until the function tract_onnx_create().
 /// The returned char must be freed with tract_free_cstring().
-fn print_memory(label: &str) {
+fn print_memory(
+    label: &str
+) {
     epoch::advance().unwrap();
     let allocated = stats::allocated::read().unwrap();
-    println!("[{label}] Memory used: {} bytes", allocated);
+    let resident = stats::resident::read().unwrap();
+    println!("[{label}] Allocated: {} bytes, Resident: {} bytes", allocated, resident);
 }
 
-fn handle_error<T>(result: Result<T, anyhow::Error>) -> TRACT_RESULT {
+fn handle_error<T>(
+    result: Result<T, anyhow::Error>
+) -> TRACT_RESULT {
     match result {
         Ok(_) => {
             LAST_ERROR.with(|msg| msg.replace(None));
@@ -297,7 +302,7 @@ fn handle_error<T>(result: Result<T, anyhow::Error>) -> TRACT_RESULT {
     }
 }
 
-pub type MyInferenceModel = Graph<InferenceFact, Box<dyn InferenceOp>>;
+pub type TractLlmInferenceModel = Graph<InferenceFact, Box<dyn InferenceOp>>;
 use std::fs::File;
 fn open_weights_file(
     path: Option<&str>,
@@ -319,75 +324,482 @@ fn open_weights_file(
     };
     let mmap = unsafe { memmap2::Mmap::map(&file)? };
     Ok(mmap.to_vec())
+}  
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_onnx_model_for_path_llm(
+    model_path: *const c_char,
+    inference_model: *mut *mut TractLlmInferenceModel,
+) -> TRACT_RESULT  {
+    // Define the result to be returned
+    let result = (|| -> Result<(), anyhow::Error> {
+        let path = CStr::from_ptr(model_path).to_str()?;
+        let model_dir = PathBuf::from_str(path)?;
+        let decrypted = open_weights_file(Some(path))?;
+        let weights_data = if decrypted.is_empty() {
+            None
+        } else {
+            Some(decrypted)
+        };
+
+        let model = tract_onnx::onnx().model_for_path(model_dir, weights_data.as_deref())?;
+
+        let input_outlets = model.input_outlets()?;
+        for outlet in input_outlets {
+            let fact = model.outlet_fact(*outlet)?;
+            println!("Input name: {}", model.node(outlet.node).name);
+            println!("Input type: {:?}", fact.datum_type);
+        }
+
+        // Count of inputs
+        let num_inputs = input_outlets.len();
+        println!("Number of inputs: {}", num_inputs);
+        
+        *inference_model = Box::into_raw(Box::new(model));
+
+        Ok(())
+    })();
+
+    handle_error(result)
 }
 
 #[no_mangle]
-pub extern "C" fn tract_free_onig() {
-    unsafe {
-        onig_sys::onig_end();
-    }
-    #[cfg(not(feature = "use_sys_time"))]
-    {
-        print_memory("After onig_end");
-    }
-}       
+pub unsafe extern "C" fn tract_onnx_model_for_path_llm_test(
+    model_path: *const c_char,
+    inference_model: *mut *mut TractLlmInferenceModel,
+    num_inputs: *mut usize,
+    input_names: *mut *mut *mut c_char,
+) -> TRACT_RESULT  {
+    // Define the result to be returned
+    let result = (|| -> Result<(), anyhow::Error> {
+        let path = CStr::from_ptr(model_path).to_str()?;
+        let model_dir = PathBuf::from_str(path)?;
+        let decrypted = open_weights_file(Some(path))?;
+        let weights_data = if decrypted.is_empty() {
+            None
+        } else {
+            Some(decrypted)
+        };
+
+        let model = tract_onnx::onnx().model_for_path(model_dir, weights_data.as_deref())?;
+
+        let input_outlets = model.input_outlets()?;
+        let input_count = input_outlets.len();
+        
+        let mut names: Vec<*mut c_char> = Vec::with_capacity(input_count);
+        for outlet in input_outlets {
+            let node = &model.node(outlet.node);
+            let name_ref: &str = &node.name;
+            let c_string = CString::new(name_ref).expect("CString::new failed");
+            names.push(c_string.into_raw());
+        }
+
+        let names_ptr = names.as_mut_ptr();
+        std::mem::forget(names);
+
+        *input_names = names_ptr;
+        *num_inputs = input_count;
+        *inference_model = Box::into_raw(Box::new(model));
+
+        Ok(())
+    })();
+
+    handle_error(result)
+}
 
 #[no_mangle]
-pub unsafe extern "C" fn tract_run_albert(
-    model_path: *const c_char,
-    tokenizer_buffer: *const u8,
+pub unsafe extern "C" fn tract_free_input_names(
+    input_names: *mut *mut c_char,
+    num_inputs: usize,
+) -> TRACT_RESULT{
+    // Define the result to be returned
+    let result = (|| -> Result<(), anyhow::Error> {
+        if input_names.is_null() {
+            return Err(anyhow::anyhow!("Input values of the llm are alredy freed!"));
+        }
+
+        let names_slice = std::slice::from_raw_parts(input_names, num_inputs);
+        for &name_ptr in names_slice {
+            if !name_ptr.is_null() {
+                let _ = CString::from_raw(name_ptr);
+            }
+        }
+        let _ = Vec::from_raw_parts(input_names, num_inputs, num_inputs);
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_llm_inference_model_input_count(
+    model: *const TractLlmInferenceModel,
+    inputs: *mut usize,
+) -> TRACT_RESULT {
+    wrap(|| unsafe {
+        let model = &(*model);
+        *inputs = model.inputs.len();
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_llm_inference_model_output_count(
+    model: *const TractLlmInferenceModel,
+    outputs: *mut usize,
+) -> TRACT_RESULT {
+    wrap(|| unsafe {
+        let model = &(*model);
+        *outputs = model.outputs.len();
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_llm_inference_model_input_name(
+    model: *const TractLlmInferenceModel,
+    input: usize,
+    name: *mut *mut c_char,
+) -> TRACT_RESULT {
+    wrap(|| unsafe {
+        *name = std::ptr::null_mut();
+        let m = &(*model);
+        let node = m.inputs[input].node;
+        *name = CString::new(&*m.node(node).name.to_string())?.into_raw();
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_llm_inference_model_output_name(
+    model: *const TractLlmInferenceModel,
+    output: usize,
+    name: *mut *mut i8,
+) -> TRACT_RESULT {
+    wrap(|| unsafe {
+        *name = std::ptr::null_mut();
+        let m = &(*model);
+        let node = m.outputs[output].node;
+        *name = CString::new(&*m.node(node).name.to_string())?.into_raw();
+        Ok(())
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_llm_value_destroy(
+    value: *mut *mut c_void
+) -> TRACT_RESULT {
+    // Define the result to be returned
+    let result = (|| -> Result<(), anyhow::Error> {
+        if value.is_null() || unsafe { (*value).is_null() } {
+            return Err(anyhow::anyhow!("Llm value is null"));
+        }
+
+        drop(Box::from_raw(*value as *mut Tensor));
+        *value = std::ptr::null_mut();
+        
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+//TEST SECTION
+#[no_mangle]
+pub unsafe extern "C" fn tract_create_tokenizer(
+    tokenizer_buffer: *const u8, 
     tokenizer_buffer_size: usize,
-    inference: *mut *mut c_char,
-    inference_model: *mut *mut MyInferenceModel
+    tokenizer_ptr: *mut *mut c_void,
+) -> TRACT_RESULT {
+    // Define the result to be returned
+    let result = (|| -> Result<(), anyhow::Error> {
+        if tokenizer_ptr.is_null() {
+            return Err(anyhow::anyhow!("Output pointer is null"));
+        }
+        if tokenizer_buffer.is_null() || tokenizer_buffer_size == 0 {
+            return Err(anyhow::anyhow!("Input buffer is null or empty"));
+        }
+
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("Before creating tokenizer");
+        }
+
+        let tokenizer_data = slice::from_raw_parts(tokenizer_buffer, tokenizer_buffer_size);
+        let tokenizer = Tokenizer::from_bytes(tokenizer_data)
+            .map_err(|e| anyhow::anyhow!("Tokenizer creation failed: {}", e))?;
+
+        *tokenizer_ptr = Box::into_raw(Box::new(tokenizer)) as *mut c_void;
+
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("After creatting tokenzer");
+        }
+
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_free_tokenizer(
+    tokenizer_ptr: *mut *mut c_void,
+) -> TRACT_RESULT {
+    // Define the result to be returned
+    let result = (|| -> Result<(), anyhow::Error> {
+        if tokenizer_ptr.is_null() || (*tokenizer_ptr).is_null() {
+            return Err(anyhow::anyhow!("Received null pointer to tokenizer"));
+        }
+
+        let boxed: Box<Tokenizer> = Box::from_raw(*tokenizer_ptr as *mut Tokenizer);
+        *tokenizer_ptr = std::ptr::null_mut();
+        drop(boxed);
+
+        unsafe {
+            onig_sys::onig_end();
+        }
+
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("After onig_end");
+        }
+
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_value_from_bytes_llm(
+    tokenizer_ptr: *mut c_void,
+    prompt: *const c_char,
+    input_values: *mut *mut c_void,
+    input_shapes: *mut *mut c_void,
+    num_inputs: usize,
 ) -> TRACT_RESULT {
     // Define the result to be returned
     let result = (|| -> Result<(), anyhow::Error> {
         #[cfg(not(feature = "use_sys_time"))]
         {
-            print_memory("Start albert");
+            print_memory("Start latest_model");
         }
-        let tokenizer_data = unsafe {
-            slice::from_raw_parts(tokenizer_buffer, tokenizer_buffer_size)
-        };
 
-        // Create the tokenizer from bytes
-        let tokenizer_result = Tokenizer::from_bytes(tokenizer_data);
-        let tokenizer = match tokenizer_result {
-            Ok(tokenizer) => tokenizer,
-            Err(_) => return Err(anyhow::anyhow!("Failed to read tokenizer")),
-        };
+        let tokenizer_test = &*(tokenizer_ptr as *mut Tokenizer);
 
-
-        let text = "Paris is the [MASK] of France.";
-        let tokenizer_output_result = tokenizer.encode(text, true);
+        let prompt_cstr = unsafe { CStr::from_ptr(prompt) };
+        let prompt_str = prompt_cstr.to_str()?;
+        let tokenizer_output_result = tokenizer_test.encode(prompt_str, true);
         let tokenizer_output = match tokenizer_output_result {
             Ok(output) => output,
             Err(_) => return Err(anyhow::anyhow!("Failed to encode text")),
         };
 
-        let input_ids = tokenizer_output.get_ids();
-        let attention_mask = tokenizer_output.get_attention_mask();
-        let token_type_ids = tokenizer_output.get_type_ids();
-        let length = input_ids.len();
+        let current_ids: Vec<u32> = tokenizer_output.get_ids().to_vec();
+        let current_attention_mask: Vec<u32> = tokenizer_output.get_attention_mask().to_vec();   
+
+        let input_ids_tensor: Tensor = Array2::from_shape_vec(
+            (1, current_ids.len()),
+            current_ids.iter().map(|&x| x as i64).collect(),
+        )?.into();
+            
+        let attention_mask_tensor: Tensor = Array2::from_shape_vec(
+            (1, current_attention_mask.len()),
+            current_attention_mask.iter().map(|&x| x as i64).collect(),
+        )?.into();
+
+        let input_ids_shape = input_ids_tensor.shape();
+        let attention_mask_shape = attention_mask_tensor.shape();
+        let input_ids_shape_vec: Vec<usize> = input_ids_shape.iter().map(|&d| d as usize).collect();
+        let attention_mask_shape_vec: Vec<usize> = attention_mask_shape.iter().map(|&d| d as usize).collect();
+
+        if num_inputs < 1 || num_inputs > 3 {
+            return Err(anyhow::anyhow!("The input is not corrrect for an llm!"));
+        }
+
+        match num_inputs {
+            1 => {
+                *(input_values.add(0)) = Box::into_raw(Box::new(input_ids_tensor)) as *mut c_void;
+                *(input_shapes.add(0)) = Box::into_raw(Box::new(input_ids_shape_vec.clone())) as *mut c_void;
+            },
+            2 => {
+                *(input_values.add(0)) = Box::into_raw(Box::new(input_ids_tensor)) as *mut c_void;
+                *(input_values.add(1)) = Box::into_raw(Box::new(attention_mask_tensor)) as *mut c_void;
+
+                *(input_shapes.add(0)) = Box::into_raw(Box::new(input_ids_shape_vec.clone())) as *mut c_void;
+                *(input_shapes.add(1)) = Box::into_raw(Box::new(attention_mask_shape_vec.clone())) as *mut c_void;
         
+                println!("Shapes: {:?}, {:?}", input_ids_shape_vec, attention_mask_shape_vec);
+            },
+            _ => {
+                let third_vector : Vec<u32> = if prompt_str.contains("[MASK]") == true {
+                    tokenizer_output.get_type_ids().to_vec()
+                } else {
+                    (0..current_ids.len() as u32).collect()
+                };
+                
+                let third_tensor: Tensor = Array2::from_shape_vec(
+                    (1, third_vector.len()),
+                    third_vector.iter().map(|&x| x as i64).collect(),
+                )?.into();
+
+                let third_tensor_shape = third_tensor.shape();
+                let third_tensor_shape_vec: Vec<usize> = third_tensor_shape.iter().map(|&d| d as usize).collect();
+
+                *(input_values.add(0)) = Box::into_raw(Box::new(input_ids_tensor)) as *mut c_void;
+                *(input_values.add(1)) = Box::into_raw(Box::new(attention_mask_tensor)) as *mut c_void;
+                *(input_values.add(2)) = Box::into_raw(Box::new(third_tensor)) as *mut c_void;
+
+
+                *(input_shapes.add(0)) = Box::into_raw(Box::new(input_ids_shape_vec.clone())) as *mut c_void;
+                *(input_shapes.add(1)) = Box::into_raw(Box::new(attention_mask_shape_vec.clone())) as *mut c_void;
+                *(input_shapes.add(2)) = Box::into_raw(Box::new(third_tensor_shape_vec.clone())) as *mut c_void;
+            
+                println!("Shapes: {:?}, {:?}, {:?}", input_ids_shape_vec, attention_mask_shape_vec, third_tensor_shape_vec);
+            },
+        };
+
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("Before drop in creating input");
+        }
+        drop(tokenizer_output);
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("After drop in creating input");
+        }
+
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_llm_shape_destroy(
+    value: *mut *mut c_void
+) -> TRACT_RESULT {
+    // Define the result to be returned
+    let result = (|| -> Result<(), anyhow::Error> {
+        if value.is_null() || unsafe { (*value).is_null() } {
+            return Ok(());
+        }
+
+        drop(Box::from_raw(*value as *mut Vec<usize>));
+        *value = std::ptr::null_mut();
+        
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_free_llm_test(
+    inputs: *mut *mut c_void,
+    num_inputs: usize,
+) -> TRACT_RESULT {
+    let result = (|| -> Result<(), anyhow::Error> {
+        if inputs.is_null() {
+            return Err(anyhow::anyhow!("Received null pointer to tensor pointer."));
+        }
+
+        for i in 0..num_inputs {
+            let ptr = *(inputs.add(i));
+            if !ptr.is_null() {
+                drop(Box::from_raw(ptr as *mut Tensor));
+                *(inputs.add(i)) = std::ptr::null_mut();
+            }
+        }
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_llm_inference_model_release(
+    model: *mut *mut TractLlmInferenceModel,
+) -> TRACT_RESULT {
+    let result = (|| -> Result<(), anyhow::Error> {
+        if model.is_null() {
+            return Err(anyhow::anyhow!("Received null pointer to llm_inference_model pointer."));
+        }
+
+        let model_ptr = *model;
+        let _ = Box::from_raw(model_ptr);
+        *model = std::ptr::null_mut();
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+use smallvec::SmallVec;
+#[no_mangle]
+pub unsafe extern "C" fn tract_run_llms(
+    model_path: *const c_char,
+    tokenizer_ptr: *mut c_void,
+    inference: *mut *mut c_char,
+    inputs: *mut *mut c_void,
+    num_inputs: usize,
+    outputs: *mut *mut c_void,
+    inference_model: *mut *mut TractLlmInferenceModel,
+) -> TRACT_RESULT {
+    // Define the result to be returned
+    let result = (|| -> Result<(), anyhow::Error> {
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("Start latest_model");
+        }
+
+        let model_inputs: SmallVec<[TValue; 4]> = unsafe {
+            std::slice::from_raw_parts(inputs, num_inputs)
+                .iter()
+                .map(|&ptr| {
+                    let tensor_ptr = ptr as *mut Tensor;
+                    let owned_tensor = Box::from_raw(tensor_ptr);
+                    let cloned_tensor = owned_tensor.clone();
+                    let _ = Box::into_raw(owned_tensor);
+                    (*cloned_tensor).into()
+                })
+                .collect()
+        };
+        let first_tensor = model_inputs[0].clone();
+
         let model = {
             #[cfg(feature = "use_sys_time")]
             {
-                let shape = [1, length];
                 if inference_model.is_null() {
                     let path = CStr::from_ptr(model_path).to_str()?;
                     let model_dir = PathBuf::from_str(path)?;
-                    tract_onnx::onnx().model_for_path(model_dir, None)?
-                        .with_input_fact(0, i64::fact(shape).into())?
-                        .with_input_fact(1, i64::fact(shape).into())?
-                        .with_input_fact(2, i64::fact(shape).into())?
+                    let decrypted = open_weights_file(Some(path))?;
+                    let weights_data = if decrypted.is_empty() {
+                        None
+                    } else {
+                        Some(decrypted)
+                    };
+
+                    let model_builder = model_inputs.iter().enumerate().try_fold(
+                        tract_onnx::onnx().model_for_path(model_dir, weights_data.as_deref())?,
+                        |model_builder, (i, tensor)| {
+                            model_builder.with_input_fact(i, i64::fact(tensor.shape()).into())
+                        },
+                    )?;
+                    model_builder
                         .into_typed()?
                         .into_runnable()?
                 } else {
-                    Box::from_raw(*inference_model)
-                        .with_input_fact(0, i64::fact(shape).into())?
-                        .with_input_fact(1, i64::fact(shape).into())?
-                        .with_input_fact(2, i64::fact(shape).into())?
+                    let model_box = Box::from_raw(*inference_model);
+                    let model_unbox = *model_box;
+                    let model_builder = model_inputs.iter().enumerate().try_fold(
+                        model_unbox,
+                        |model_builder, (i, tensor)| {
+                            model_builder.with_input_fact(i, i64::fact(tensor.shape()).into())
+                        },
+                    )?;
+                    model_builder
                         .into_typed()?
                         .into_runnable()?
                 }
@@ -398,51 +810,52 @@ pub unsafe extern "C" fn tract_run_albert(
                 if inference_model.is_null() {
                     let path = CStr::from_ptr(model_path).to_str()?;
                     let model_dir = PathBuf::from_str(path)?;
-                    tract_onnx::onnx().model_for_path(model_dir, None)?
+                    let decrypted = open_weights_file(Some(path))?;
+                    let weights_data = if decrypted.is_empty() {
+                        None
+                    } else {
+                        Some(decrypted)
+                    };
+
+                    tract_onnx::onnx().model_for_path(model_dir, weights_data.as_deref())?
                         .into_optimized()?
                         .into_runnable()?
                 } else {
-                    Box::from_raw(*inference_model)
+                    let model_ref: &mut TractLlmInferenceModel = {
+                        assert!(!inference_model.is_null());
+                        let ptr = *inference_model;
+                        assert!(!ptr.is_null());
+                        &mut *ptr
+                    };
+                    model_ref.clone()
                         .into_optimized()?
                         .into_runnable()?
                 }
             }
         };
 
-        let mask_pos = input_ids
-            .iter()
-            .position(|&x| x == tokenizer.token_to_id("[MASK]").unwrap())
-            .ok_or_else(|| anyhow::anyhow!("Mask token not found"))?;
+        let tokenizer_test = &*(tokenizer_ptr as *mut Tokenizer);
+        
+        let output_vectors = model.run(model_inputs)?;
 
-        let input_ids_tensor: Tensor = tract_ndarray::Array2::from_shape_vec(
-            (1, length),
-            input_ids.iter().map(|&x| x as i64).collect(),
-        )?
-        .into();
-        let attention_mask_tensor: Tensor = tract_ndarray::Array2::from_shape_vec(
-            (1, length),
-            attention_mask.iter().map(|&x| x as i64).collect(),
-        )?
-        .into();
-        let token_type_ids_tensor: Tensor = tract_ndarray::Array2::from_shape_vec(
-            (1, length),
-            token_type_ids.iter().map(|&x| x as i64).collect(),
-        )?
-        .into();
+        for (i, output) in output_vectors.into_iter().enumerate() {
+            *(outputs.add(i)) = Box::into_raw(Box::new(output.into_tensor())) as *mut c_void;
+        }
 
-        let outputs = model.run(tvec!(input_ids_tensor.into(), attention_mask_tensor.into(), token_type_ids_tensor.into()))?;
-        let logits = outputs[0].to_array_view::<f32>()?;
-        let logits = logits.slice(s![0, mask_pos, ..]);
-        let word_id = logits.iter().zip(0..).max_by(|a, b| a.0.partial_cmp(b.0).unwrap()).unwrap().1;
-        let word = tokenizer.id_to_token(word_id);
-
+        let array: tract_ndarray::ArrayD<i64> = first_tensor.to_array_view::<i64>()?.to_owned();
+        let first_vec: Vec<i64> = array.iter().cloned().collect();
+        let first_vec_u32: Vec<u32> = first_vec
+                                    .into_iter()
+                                    .map(|x| x as u32)
+                                    .collect();
+        let generated_text = tokenizer_test.decode(&first_vec_u32, true).map_err(|e| {
+            anyhow::anyhow!("Failed to decode tokenizer output: {}", e)
+        })?;
+        
         // Handle the Option and create a CString
         let re = regex::Regex::new(r"\s+")
             .map_err(|e| anyhow::anyhow!("Failed to compile regex: {}", e))?;
-        let clean_string = match word {
-            Some(word) => re.replace_all(word.trim(), " ").to_string(),
-            None => "No word found".to_string(),
-        };
+        let clean_string = re.replace_all(generated_text.trim(), " ").to_string();
         let formatted_string = format!("Inference: {}", clean_string);
         let c_word = CString::new(formatted_string)?;
         *inference = c_word.into_raw(); // Pass the result back
@@ -452,9 +865,6 @@ pub unsafe extern "C" fn tract_run_albert(
             print_memory("Before drop");
         }
         drop(model);
-        drop(tokenizer);
-        drop(tokenizer_output);
-        drop(outputs);
         #[cfg(not(feature = "use_sys_time"))]
         {
             print_memory("After drop");
@@ -466,132 +876,556 @@ pub unsafe extern "C" fn tract_run_albert(
     handle_error(result)
 }
 
+/* 
+Solution 1
+let input_fact = model_ref.input_fact(i)?.clone();
+: in both typed and optimized I get: provide explicit facts
+
+Solution 2: Force concrete shapes throughout, NO because of dynamic inputs
+It can be done by [tensor.datum_typoe(), tensor.shape()]
+let shape: TVec<TDim> = tensor.shape().iter().map(|&d| d.to_dim()).collect();
+InferenceFact::dt_shape(tensor.datum_type(), shape)
+
+Solution 3: might help -> did not help, created a lot of symbol tables
+let table = SymbolTable::default();
+let batch_size = table.sym("batch_size");
+let sequence_length = table.sym("sequence_length");
+... 
+let input_fact = InferenceFact::dt_shape(
+  tensor.datum_type(),
+  tvec![batch_size.clone(), sequence_length.clone()]
+);
+*/
+
+use tract_hir::infer::Factoid;
+pub type TractLlmTransformedModel = Graph<TypedFact, Box<dyn TypedOp>>;
+// use std::sync::{OnceLock};
+// static GLOBAL_SYMBOLS: OnceLock<(Symbol, Symbol)> = OnceLock::new();
+
+// fn get_global_symbols() -> (Symbol, Symbol) {
+//     let symbols = GLOBAL_SYMBOLS.get_or_init(|| {
+//         let table = SymbolTable::default();
+//         let batch_size = table.sym("batch");
+//         let sequence_length = table.sym("seq");
+//         println!("INITIALIZING GLOBAL SYMBOLS - batch: {:?}, seq: {:?}", batch_size, sequence_length);
+//         (batch_size, sequence_length)
+//     });
+//     println!("RETURNING GLOBAL SYMBOLS - batch: {:?}, seq: {:?}", symbols.0, symbols.1);
+//     symbols.clone()
+// }
+
+use std::sync::Mutex;
+use lazy_static::lazy_static;
+use crate::tract_data::internal::solve_for;
+use tract_core::internal::SymbolTable;
+
+lazy_static! {
+    static ref GLOBAL_RESOLVED_SYMBOLS: Mutex<SymbolValues> = Mutex::new(SymbolValues::default());
+}
+
+fn resolve(expression: &TDim, provided: i64) -> TractResult<()> {
+    let mut resolved_symbols = GLOBAL_RESOLVED_SYMBOLS.lock().unwrap();
+    let expected = expression.eval(&*resolved_symbols);
+    if let Ok(x) = expected.to_i64() {
+        if x != provided {
+            anyhow::bail!("Clashing resolution for expression. {expression}={x} != {provided}.")
+        }
+    }
+    if expected.symbols().len() == 1 {
+        let sym = expected.symbols().into_iter().next().unwrap();
+        if let Some(v) = solve_for(&sym, &expected, &provided.to_dim()) {
+            let concrete_value = v.to_i64().unwrap();
+            resolved_symbols[&sym] = Some(concrete_value);
+        }
+    }
+    println!("SYMBOLS: {:?}, expression {:?} and provided {:?}", *resolved_symbols, expression, provided);
+    Ok(())
+}
+
+use std::borrow::Borrow;
+use tract_core::prelude::TDim;
 #[no_mangle]
-pub unsafe extern "C" fn tract_run_gpt2(
-    model_path: *const c_char,
-    tokenizer_buffer: *const u8,
-    tokenizer_buffer_size: usize,
+pub unsafe extern "C" fn tract_inference_model_into_typed_llm(
+    inputs: *mut *mut c_void,
+    num_inputs: usize,
+    input_shapes: *mut *mut c_void,
+    model: *mut *mut TractLlmInferenceModel,
+    transformed_model: *mut *mut TractLlmTransformedModel
+) -> TRACT_RESULT {
+    // Define the result to be returned
+    let result = (|| -> Result<(), anyhow::Error> {     
+        let model_inputs: SmallVec<[TValue; 4]> = unsafe {
+            std::slice::from_raw_parts(inputs, num_inputs)
+                .iter()
+                .map(|&ptr| {
+                    let tensor_ptr = ptr as *mut Tensor;
+                    let owned_tensor = Box::from_raw(tensor_ptr);
+                    let cloned_tensor = owned_tensor.clone();
+                    let _ = Box::into_raw(owned_tensor);
+                    (*cloned_tensor).into()
+                })
+                .collect()
+        };
+
+        println!("Okay so far");
+        let shapes: Vec<Option<Vec<usize>>> = unsafe {
+            std::slice::from_raw_parts(input_shapes, num_inputs)
+                .iter()
+                .map(|&ptr| {
+                    if ptr.is_null() {
+                        None
+                    } else {
+                        let shape_vec_ptr = ptr as *mut Vec<usize>;
+                        let owned_shapes = Box::from_raw(shape_vec_ptr);
+                        let cloned_shapes = owned_shapes.clone();
+                        let _ = Box::into_raw(owned_shapes);
+                        (*cloned_shapes).into()
+                    }
+                })
+                .collect()
+        };
+        for shape_opt in &shapes {
+            match shape_opt {
+                Some(shape) => println!("Reclaimed shape: {:?}", shape),
+                None => println!("Shape was null"),
+            }
+        }
+
+        let model_ref: &mut TractLlmInferenceModel = {
+            assert!(!model.is_null());
+            let ptr = *model;
+            assert!(!ptr.is_null());
+            &mut *ptr
+        };
+
+        let mut model_builder_with_properties = model_ref.clone();
+
+        let binding = model_builder_with_properties.clone();
+        let graph = binding.borrow();
+        for (i, outlet) in graph.input_outlets().unwrap().iter().enumerate() {
+            let mut symbols: Vec<Symbol> = Vec::new();
+            let fact = graph.outlet_fact(*outlet).unwrap();
+            println!("Input {} fact: {:?}", i, fact);
+            println!("Shape field: {:?}", fact.shape);
+
+            if let Some(Some(concrete_shape)) = shapes.get(i) {
+                println!("Setting concrete shape for input {}: {:?}", i, concrete_shape);
+                
+                let dt = match fact.datum_type {
+                    GenericFactoid::Only(concrete_dt) => {
+                        let int64_dt = i64::datum_type();
+                        let float32_dt = f32::datum_type();
+                        let bool_dt = bool::datum_type();
+                        let int32_dt = i32::datum_type();
+                        
+                        match concrete_dt {
+                            dt if dt == int64_dt || dt == float32_dt || dt == bool_dt || dt == int32_dt => dt,
+                            _ => int64_dt,
+                        }
+                    },
+                    GenericFactoid::Any => {
+                        i64::datum_type()
+                    }
+                };
+
+                println!("Shape is: {:?}", concrete_shape);
+                let concrete_fact = InferenceFact::dt_shape(dt, concrete_shape);
+                model_builder_with_properties.set_input_fact(i, concrete_fact)?;
+                
+                let rank = match fact.shape.rank() {
+                    GenericFactoid::Only(r) => r,
+                    GenericFactoid::Any => concrete_shape.len().try_into().unwrap(),
+                };
+
+                for idx in 0..rank {
+                    let concrete_dim = concrete_shape[idx as usize] as i64;
+                    
+                    let dim_factoid = fact.shape.dim(idx.try_into().unwrap()); 
+                    
+                    match dim_factoid {
+                        Some(GenericFactoid::Only(dim)) => {
+                            println!("Dimension {}: {:?}, concrete: {}", idx, dim, concrete_dim);
+                            resolve(&dim, concrete_dim)?;
+                            for sym in dim.symbols() {
+                                symbols.push(sym);
+                            }
+                        },
+                        Some(GenericFactoid::Any) => {
+                            println!("Dimension {} is ANY, using concrete value: {}", idx, concrete_dim);
+                            // ANY dimension is handled by the concrete shape we already set
+                        },
+                        None => continue
+                    }
+                }
+            
+                println!("Symbols from input {}: {:?}", i, symbols);
+            } else {
+                println!("No concrete shape available for input {}", i);
+            }
+        }
+    
+            // let rank = match fact.shape.rank() {
+            //     GenericFactoid::Only(r) => r,
+            //     GenericFactoid::Any => continue,
+            // };      
+            // for idx in 0..rank {
+            //     let dim_factoid = fact.shape.dim(idx.try_into().unwrap()); 
+                
+            //     match dim_factoid {
+            //         Some(GenericFactoid::Only(dim)) => {
+            //             println!("Dimension {}: {:?}", idx, dim);
+            //             for sym in dim.symbols() {
+            //                 symbols.push(sym);
+            //             }
+            //         },
+            //         Some(GenericFactoid::Any) => continue,
+            //         None => continue
+            //     }
+            // }
+            
+            // println!("Symbols from input {}: {:?}", i, symbols);
+            // if symbols.is_empty() {
+            //     continue;
+            // }
+
+            // for (j, outlet) in graph.input_outlets().unwrap().iter().enumerate() {
+            //     let fact = graph.outlet_fact(*outlet).unwrap();
+            //     if let Ok(typed_fact) = fact.to_typed_fact() {
+            //         let tensor = &model_inputs[j];
+            //         for (dim_abstract, dim_concrete) in typed_fact.shape.iter().zip(tensor.shape()) {
+            //             resolve(dim_abstract, *dim_concrete as i64)?;
+            //             println!(
+            //                 "Resolved -> dim_abstract: {:?}, dim_concrete as i64: {:?}",
+            //                 dim_abstract, *dim_concrete as i64
+            //             );
+            //         }
+            //     }
+            // }
+            // let resolved_symbols = GLOBAL_RESOLVED_SYMBOLS.lock().unwrap();
+            // println!("Resolved symbols: {:?}", *resolved_symbols);
+
+        //model_builder_with_properties.properties.insert("batch_size".to_string(), Tensor::from(1i64).into_arc_tensor());
+        //model_builder_with_properties.properties.insert("sequence_length".to_string(), Tensor::from(1i64).into_arc_tensor());
+
+        // let model_builder_with_facts = model_inputs.iter().enumerate().try_fold(
+        //     model_builder_with_properties,
+        //     |current_builder, (i, tensor)| {
+        //         let input_fact_result = model_ref.input_fact(i);
+        //         println!("Original input fact for input {}: {:?}", i, input_fact_result);
+
+        //         //let input_fact = i64::fact(tensor.shape()).into();
+                
+        //         let input_fact = match input_fact_result {
+        //             Ok(existing_fact) if existing_fact.shape.is_concrete() && existing_fact.datum_type().is_some() => {
+        //                 println!("Using existing fact with resolved symbols: {:?}", existing_fact);
+        //                 existing_fact.clone()
+        //                 // let datum_type = existing_fact.datum_type().unwrap();
+        //                 // let concrete_shape: TVec<TDim> = if tensor.shape().is_empty() {
+        //                 //     tvec![TDim::Val(1)]
+        //                 // } else {
+        //                 //     tensor.shape()
+        //                 //         .iter()
+        //                 //         .map(|&d| TDim::Val(d as i64))
+        //                 //         .collect()
+        //                 // };
+                        
+        //                 // println!("Forcing concrete shape for input {}: {:?}", i, concrete_shape);
+        //                 // InferenceFact::dt_shape(datum_type, concrete_shape)
+        //             },
+        //             _ => {
+        //                 let mut datum_type = input_fact_result
+        //                     .ok()
+        //                     .and_then(|fact| fact.datum_type())
+        //                     .unwrap_or_else(|| { tensor.datum_type()
+        //                 });
+        //                 let int64_dt = i64::datum_type();
+        //                 let float32_dt = f32::datum_type();
+        //                 let bool_dt = bool::datum_type();
+        //                 let int32_dt = i32::datum_type();
+        //                 datum_type = match datum_type {
+        //                     dt if dt == int64_dt || dt == float32_dt || dt == bool_dt || dt == int32_dt => dt,
+        //                     _ => int64_dt,
+        //                 };
+
+        //                 println!("Input {}: Using tensor shape: {:?}", i, tensor.shape());
+        //                 let shape: TVec<TDim> = if !tensor.shape().is_empty() {
+        //                     println!("Shape is available: {:?}", tensor.shape());
+        //                     tensor.shape().iter().map(|&d| TDim::Val(d as i64)).collect()
+        //                 } else {
+        //                     match tensor.as_slice::<i64>() {
+        //                         Ok(slice) if slice.len() > 0 => {
+        //                             println!("Shape is 1-D slice with length: {:?}", slice.len());
+        //                             tvec![TDim::Val(slice.len() as i64)]
+        //                         }
+        //                         _ => {
+        //                             println!("Shape is symbolic: [batch_size]");
+        //                             //let (batch_size, _sequence_length) = get_global_symbols();
+        //                             //tvec![TDim::Sym(batch_size.clone())]
+        //                             //tvec![]
+        //                             tvec![TDim::Val(1)]
+        //                         }
+        //                     }
+        //                 };
+
+        //                 println!("Creating concrete input fact with dtype: {:?} and shape: {:?}", datum_type, shape);
+        //                 InferenceFact::dt_shape(datum_type, shape)
+        //                 //InferenceFact::dt_shape(datum_type, tensor.shape())
+        //             }
+        //         };
+        //         current_builder.with_input_fact(i, input_fact).map_err(|e| {
+        //             println!("Failed to set input fact for index {}: {}", i, e);
+        //             e
+        //         })
+        //     },
+        // );
+
+
+        println!("About to call into_typed()...");
+        let m = model_builder_with_properties.into_typed().map_err(|e| {
+            println!("Failed to convert to typed model: {}", e);
+            e
+        })?;
+ 
+        *transformed_model = Box::into_raw(Box::new(m));
+
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+use tract_hir::internal::GenericFactoid;
+#[no_mangle]
+pub unsafe extern "C" fn tract_inference_model_into_optimized_llm(
+    inputs: *mut *mut c_void,
+    num_inputs: usize,
+    input_shapes: *mut *mut c_void,
+    model: *mut *mut TractLlmInferenceModel,
+    transformed_model: *mut *mut TractLlmTransformedModel
+) -> TRACT_RESULT {
+    // Define the result to be returned
+    let result = (|| -> Result<(), anyhow::Error> {
+        print_memory("Start optimizing the model");
+        
+        let model_inputs: SmallVec<[TValue; 4]> = unsafe {
+            std::slice::from_raw_parts(inputs, num_inputs)
+                .iter()
+                .map(|&ptr| {
+                    let tensor_ptr = ptr as *mut Tensor;
+                    let owned_tensor = Box::from_raw(tensor_ptr);
+                    let cloned_tensor = owned_tensor.clone();
+                    let _ = Box::into_raw(owned_tensor);
+                    (*cloned_tensor).into()
+                })
+                .collect()
+        };
+
+        println!("Okay so far");
+        let shapes: Vec<Option<Vec<usize>>> = unsafe {
+            std::slice::from_raw_parts(input_shapes, num_inputs)
+                .iter()
+                .map(|&ptr| {
+                    if ptr.is_null() {
+                        None
+                    } else {
+                        let shape_vec_ptr = ptr as *mut Vec<usize>;
+                        let owned_shapes = Box::from_raw(shape_vec_ptr);
+                        let cloned_shapes = owned_shapes.clone();
+                        let _ = Box::into_raw(owned_shapes);
+                        (*cloned_shapes).into()
+                    }
+                })
+                .collect()
+        };
+        for shape_opt in &shapes {
+            match shape_opt {
+                Some(shape) => println!("Reclaimed shape: {:?}", shape),
+                None => println!("Shape was null"),
+            }
+        }
+
+        let model_ref: &mut TractLlmInferenceModel = {
+            assert!(!model.is_null());
+            let ptr = *model;
+            assert!(!ptr.is_null());
+            &mut *ptr
+        };
+
+        let mut model_builder = model_ref.clone();
+        // model_builder = model_inputs.iter().enumerate().try_fold(
+        //     model_builder,
+        //     |builder, (i, tensor)| {
+        //         let input_fact_result = model_ref.input_fact(i);
+        //         println!("Original input fact for input {}: {:?}", i, input_fact_result);
+
+        //         let mut datum_type = input_fact_result.as_ref()
+        //             .ok()
+        //             .and_then(|fact| fact.datum_type())
+        //             .unwrap_or_else(|| { tensor.datum_type()
+        //         });
+        //         let int64_dt = i64::datum_type();
+        //         let float32_dt = f32::datum_type();
+        //         let bool_dt = bool::datum_type();
+        //         let int32_dt = i32::datum_type();
+        //         datum_type = match datum_type {
+        //             dt if dt == int64_dt || dt == float32_dt || dt == bool_dt || dt == int32_dt => dt,
+        //             _ => int64_dt,
+        //         };
+                
+        //         let original_shape: Option<TVec<TDim>> = match &shapes[i] {
+        //             None => {
+        //                 None
+        //             }
+        //             Some(shape_vec) if !shape_vec.is_empty() => {
+        //                 println!("Using provided shape as concrete values: {:?}", shape_vec);
+        //                 Some(shape_vec.iter().map(|&d| TDim::Val(d as i64)).collect())
+        //             }
+        //             Some(_) => {
+        //                 println!("Using tensor shape directly");
+        //                 Some(tensor.shape().iter().map(|&d| TDim::Val(d as i64)).collect())
+        //             }
+        //         };
+
+        //         let builder = if let Some(ref shape) = original_shape {
+        //             println!("Input fact: dt={:?}, shape_vec={:?}", datum_type, original_shape);
+        //             builder.with_input_fact(i, InferenceFact::dt_shape(datum_type, shape))
+        //         } else if let Ok(fact) = input_fact_result {
+        //             let dims: TVec<Option<TDim>> = fact.shape.dims()
+        //                 .map(|d| d.concretize())
+        //                 .collect();
+
+        //             let has_unknown = dims.iter().any(|d| d.is_none());
+
+        //             if has_unknown {
+        //                 let shape: TVec<TDim> = tensor.shape().iter().map(|&d| TDim::Val(d as i64)).collect();
+        //                 let datum_type = fact.datum_type().unwrap_or(tensor.datum_type());
+        //                 println!("Fact not concrete\nInput fact: dt={:?}, shape_vec={:?}", datum_type, shape);
+        //                 builder.with_input_fact(i, InferenceFact::dt_shape(datum_type, shape))
+        //             } else {
+        //                 println!("Using original fact directly for input {}", i);
+        //                 builder.with_input_fact(i, fact.clone())
+        //             }
+
+        //             // 2nd approach
+        //             //println!("Using original fact directly for input {}", i);
+        //             //builder.with_input_fact(i, fact.clone())
+        //         } else {
+        //             panic!("No shape provided and no original fact available for input {}", i);
+        //         };
+
+        //         builder
+                
+        //         //let shape_vec = tvec!(batch.clone(), seq.clone());
+        //         //let shape_vec = [1, tensor.len()];                
+        //     },
+        // )?;
+
+        // println!("before Typed model");
+        // let mut typed_model = model_builder.into_typed()?;
+        // println!("Typed model created");
+        // let m = typed_model;
+
+        println!("About to call into_optimized()...");
+        let m = model_builder.into_optimized().map_err(|e| {
+            println!("Failed to convert to typed model: {}", e);
+            e
+        })?;
+ 
+        // let m = {
+        //     let model_ref: &mut TractLlmInferenceModel = {
+        //         assert!(!model.is_null());
+        //         let ptr = *model;
+        //         assert!(!ptr.is_null());
+        //         &mut *ptr
+        //     };
+        //     model_ref.clone().into_optimized()?
+        // };
+
+        *transformed_model = Box::into_raw(Box::new(m));
+        
+        print_memory("Finished optimizing the model");
+
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_model_into_runnable_and_run_llm(
+    tokenizer_ptr: *mut c_void,
+    inputs: *mut *mut c_void,
+    num_inputs: usize,
+    transformed_model: *mut *mut TractLlmTransformedModel,
     inference: *mut *mut c_char,
-    num_tokens: usize,
-    prompt: *const c_char,
-    inference_model: *mut *mut MyInferenceModel
-) -> TRACT_RESULT  {
+    outputs: *mut *mut c_void,
+    input_shapes: *mut *mut c_void,
+) -> TRACT_RESULT {
     // Define the result to be returned
     let result = (|| -> Result<(), anyhow::Error> {
         #[cfg(not(feature = "use_sys_time"))]
         {
-            print_memory("Start gpt2");
+            print_memory("Start running llm");
         }
-        let tokenizer_data = unsafe {
-            slice::from_raw_parts(tokenizer_buffer, tokenizer_buffer_size)
-        };
 
-        // Create the tokenizer from bytes
-        let tokenizer_result = Tokenizer::from_bytes(tokenizer_data);
-        let tokenizer = match tokenizer_result {
-            Ok(tokenizer) => tokenizer,
-            Err(_) => return Err(anyhow::anyhow!("Failed to read tokenizer")),
-        };
-
-        let prompt_cstr = unsafe { CStr::from_ptr(prompt) };
-        let prompt_str = prompt_cstr.to_str()?;
-        let tokenizer_output_result = tokenizer.encode(prompt_str, true);
-        let tokenizer_output = match tokenizer_output_result {
-            Ok(output) => output,
-            Err(_) => return Err(anyhow::anyhow!("Failed to encode text")),
-        };
-
-        let mut current_ids: Vec<u32> = tokenizer_output.get_ids().to_vec();
-        let mut current_attention_mask: Vec<u32> = tokenizer_output.get_attention_mask().to_vec();
-
-        let model = {
-            #[cfg(feature = "use_sys_time")]
-            {
-                let shape_input_ids = [1, current_ids.len()];
-                let shape_attention_mask = [1, current_attention_mask.len()];
-                if inference_model.is_null() {
-                    let path = CStr::from_ptr(model_path).to_str()?;
-                    let model_dir = PathBuf::from_str(path)?;
-                    tract_onnx::onnx().model_for_path(model_dir, None)?
-                        .with_input_fact(0, i64::fact(shape_input_ids).into())?
-                        .with_input_fact(1, i64::fact(shape_attention_mask).into())?
-                        .into_typed()?
-                        .into_runnable()?
-                } else {
-                    Box::from_raw(*inference_model)
-                        .with_input_fact(0, i64::fact(shape_input_ids).into())?
-                        .with_input_fact(1, i64::fact(shape_attention_mask).into())?
-                        .into_typed()?
-                        .into_runnable()?
-                }
-            }
-
-            #[cfg(not(feature = "use_sys_time"))]
-            {
-                if inference_model.is_null() {
-                    let path = CStr::from_ptr(model_path).to_str()?;
-                    let model_dir = PathBuf::from_str(path)?;
-                    tract_onnx::onnx().model_for_path(model_dir, None)?
-                        .into_optimized()?
-                        .into_runnable()?
-                } else {
-                    Box::from_raw(*inference_model).into_optimized()?.into_runnable()?
-                }
-            }
-        };
-
-        for _ in 0..num_tokens {
-            let input_ids_tensor: Tensor = Array2::from_shape_vec(
-                (1, current_ids.len()),
-                current_ids.iter().map(|&x| x as i64).collect(),
-            )?.into();
-
-            let attention_mask_tensor: Tensor = Array2::from_shape_vec(
-                (1, current_attention_mask.len()),
-                current_attention_mask.iter().map(|&x| x as i64).collect(),
-            )?.into();
-
-            let outputs = model.run(tvec!(input_ids_tensor.into(), attention_mask_tensor.into()))?;
-            let logits = outputs[0].to_array_view::<f32>()?;
-            let last_logits = logits.slice(s![0, -1, ..]);
-
-            // Top-k sampling
-            let k = 10;
-            let mut scored: Vec<(usize, f32)> = last_logits
+        let model_inputs: SmallVec<[TValue; 4]> = unsafe {
+            std::slice::from_raw_parts(inputs, num_inputs)
                 .iter()
-                .cloned()
-                .enumerate()
-                .collect();
+                .map(|&ptr| {
+                    let tensor_ptr = ptr as *mut Tensor;
+                    let owned_tensor = Box::from_raw(tensor_ptr);
+                    let cloned_tensor = owned_tensor.clone();
+                    let _ = Box::into_raw(owned_tensor);
+                    (*cloned_tensor).into()
+                })
+                .collect()
+        };
+        let first_tensor = model_inputs[0].clone();
 
-            scored.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-            let top_k = &scored[..k.min(scored.len())];
-            let next_token_id = top_k
-                .choose(&mut thread_rng())
-                .map(|(idx, _)| *idx)
-                .unwrap() as u32;
-
-            // Stop if model outputs <|endoftext|> token (50256 in GPT-2)
-            if next_token_id == 50256 {
-                break;
-            }
-
-            current_ids.push(next_token_id);
-            current_attention_mask.push(1);
-
-            #[cfg(not(feature = "use_sys_time"))]
-            {
-                print_memory("Before dropping outputs");
-            }
-            drop(outputs);
-            #[cfg(not(feature = "use_sys_time"))]
-            {
-                print_memory("After dropping outputs");
-            }
+        let tokenizer_test = &*(tokenizer_ptr as *mut Tokenizer);
+        
+        let model = Box::from_raw(*transformed_model).into_runnable()?;
+        
+        let output_vectors = model.run(model_inputs)?;
+        for (i, output) in output_vectors.into_iter().enumerate() {
+            let tensor = output.into_tensor();
+            println!("producer runtime output shape: {:?} and dt: {:?}", tensor.shape(), tensor.datum_type());
+            *(input_shapes.add(i)) = Box::into_raw(Box::new(tensor.shape().to_vec())) as *mut c_void;
+            *(outputs.add(i)) = Box::into_raw(Box::new(tensor)) as *mut c_void;
         }
 
-        let generated_text = tokenizer.decode(&current_ids, true).map_err(|e| {
-            anyhow::anyhow!("Failed to decode tokenizer output: {}", e)
-        })?;
+        let first_vec_u32: Vec<u32> = if let Ok(array) = first_tensor.to_array_view::<i64>() {
+            array.iter().map(|x| *x as u32).collect()
+        } else if let Ok(array) = first_tensor.to_array_view::<f32>() {
+            array.iter().map(|x| *x as u32).collect()
+        } else {
+            return Err(anyhow::anyhow!(
+                "Unsupported tensor type: {:?}",
+                first_tensor.datum_type()
+            ));
+        };
+
+        let generated_text = match tokenizer_test.token_to_id("[MASK]") {
+            Some(mask_id) => {
+                if let Some(mask_pos) = first_vec_u32.iter().position(|&x| x == mask_id) {
+                    tokenizer_test
+                        .decode(&[first_vec_u32[mask_pos]], true)
+                        .map_err(|e| anyhow::anyhow!("Failed to decode mask prediction: {}", e))?
+                } else {
+                    tokenizer_test
+                        .decode(&first_vec_u32, true)
+                        .map_err(|e| anyhow::anyhow!("Failed to decode tokenizer output: {}", e))?
+                }
+            }
+            None => {
+                tokenizer_test
+                    .decode(&first_vec_u32, true)
+                    .map_err(|e| anyhow::anyhow!("Failed to decode tokenizer output: {}", e))?
+            }
+        };
+        // let generated_text = tokenizer_test.decode(&first_vec_u32, true).map_err(|e| {
+        //     anyhow::anyhow!("Failed to decode tokenizer output: {}", e)
+        // })?;
         
         // Handle the Option and create a CString
         let re = regex::Regex::new(r"\s+")
@@ -600,17 +1434,124 @@ pub unsafe extern "C" fn tract_run_gpt2(
         let formatted_string = format!("Inference: {}", clean_string);
         let c_word = CString::new(formatted_string)?;
         *inference = c_word.into_raw(); // Pass the result back
-        
+
         #[cfg(not(feature = "use_sys_time"))]
         {
-            print_memory("Before drop");
+            print_memory("Finished running llm");
         }
-        drop(model);
-        drop(tokenizer);
-        drop(tokenizer_output);
+
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_update_input_values_llm(
+    inputs: *mut *mut c_void,
+    num_inputs: usize,
+    tokenizer_ptr: *mut c_void,
+    outputs: *mut *mut c_void,
+    num_outputs: usize,
+) -> TRACT_RESULT {
+    // Define the result to be returned
+    let result = (|| -> Result<(), anyhow::Error> {
         #[cfg(not(feature = "use_sys_time"))]
         {
-            print_memory("After drop");
+            print_memory("Before updating input values");
+        }
+
+        let model_outputs: SmallVec<[TValue; 4]> = unsafe {
+            std::slice::from_raw_parts(outputs, num_outputs)
+                .iter()
+                .map(|&ptr| {
+                    let tensor_ptr = ptr as *mut Tensor;
+                    let owned_tensor = Box::from_raw(tensor_ptr);
+                    let cloned_tensor = owned_tensor.clone();
+                    let _ = Box::into_raw(owned_tensor);
+                    (*cloned_tensor).into()
+                })
+                .collect()
+        };
+
+        let logits = model_outputs[0].to_array_view::<f32>()?;
+        let last_logits = logits.slice(s![0, -1, ..]);
+
+        // Top-k sampling
+        let k = 3;
+        let mut scored: Vec<(usize, f32)> = last_logits
+            .iter()
+            .cloned()
+            .enumerate()
+            .collect();
+
+        scored.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        let top_k = &scored[..k.min(scored.len())];
+        let next_token_id = top_k
+            .choose(&mut thread_rng())
+            .map(|(idx, _)| *idx)
+            .unwrap() as u32;
+
+        let tokenizer_test = &*(tokenizer_ptr as *mut Tokenizer);
+        // Stop if model outputs <|endoftext|> token (50256 in GPT-2)
+        let eos_token_id = tokenizer_test.get_vocab(true).get("<|endoftext|>").cloned().unwrap_or(50256);
+        if next_token_id == eos_token_id {
+            return Err(anyhow::anyhow!("Reached EOS token: {}", eos_token_id));
+        }
+
+        // Update the vectors with new token
+        let old_input_vecs: SmallVec<[TValue; 4]> = unsafe {
+            std::slice::from_raw_parts(inputs, num_inputs)
+                .iter()
+                .map(|&ptr| {
+                    let tensor_ptr = ptr as *mut Tensor;
+                    let owned_tensor = Box::from_raw(tensor_ptr);
+                    let cloned_tensor = owned_tensor.clone();
+                    let _ = Box::into_raw(owned_tensor);
+                    (*cloned_tensor).into()
+                })
+                .collect()
+        };
+
+        let mut input_arrays: Vec<Vec<i64>> = old_input_vecs.iter()
+            .map(|tval| {
+                tval.to_array_view::<i64>()
+                    .map(|arr| arr.iter().cloned().collect::<Vec<i64>>())
+            })
+            .collect::<Result<_, _>>()?;
+
+        for (i, vec) in input_arrays.iter_mut().enumerate() {
+            match i {
+                0 => vec.push(next_token_id as i64),         // input_ids
+                1 => vec.push(1),                            // attention_mask
+                2 => {                                       // position_ids
+                    let last = *vec.last().unwrap();
+                    vec.push(last + 1);
+                }
+                _ => {}
+            }
+        }
+
+        let new_tensors : Vec<Tensor> = input_arrays
+            .into_iter()
+            .map(|vec| {
+                let len = vec.len();
+                let array = Array2::from_shape_vec(
+                    (1, len),
+                    vec.iter().map(|&x| x as i64).collect(),
+                ).unwrap();
+                array.into()
+        }).collect();
+
+        // Overwrite the inputs with the new tensors
+        tract_free_llm_test(inputs, num_inputs);
+        for (i, tensor) in new_tensors.into_iter().enumerate() {
+            *(inputs.add(i)) = Box::into_raw(Box::new(tensor)) as *mut c_void;
+        }
+
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("After updating input values");
         }
 
         Ok(())
@@ -783,6 +1724,295 @@ pub unsafe extern "C" fn tract_run_latest_models(
     handle_error(result)
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn tract_run_albert(
+    model_path: *const c_char,
+    tokenizer_buffer: *const u8,
+    tokenizer_buffer_size: usize,
+    inference: *mut *mut c_char,
+    inference_model: *mut *mut TractLlmInferenceModel
+) -> TRACT_RESULT {
+    // Define the result to be returned
+    let result = (|| -> Result<(), anyhow::Error> {
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("Start albert");
+        }
+        let tokenizer_data = unsafe {
+            slice::from_raw_parts(tokenizer_buffer, tokenizer_buffer_size)
+        };
+
+        // Create the tokenizer from bytes
+        let tokenizer_result = Tokenizer::from_bytes(tokenizer_data);
+        let tokenizer = match tokenizer_result {
+            Ok(tokenizer) => tokenizer,
+            Err(_) => return Err(anyhow::anyhow!("Failed to read tokenizer")),
+        };
+
+
+        let text = "Paris is the [MASK] of France.";
+        let tokenizer_output_result = tokenizer.encode(text, true);
+        let tokenizer_output = match tokenizer_output_result {
+            Ok(output) => output,
+            Err(_) => return Err(anyhow::anyhow!("Failed to encode text")),
+        };
+
+        let input_ids = tokenizer_output.get_ids();
+        let attention_mask = tokenizer_output.get_attention_mask();
+        let token_type_ids = tokenizer_output.get_type_ids();
+        let length = input_ids.len();
+        
+        let model = {
+            #[cfg(feature = "use_sys_time")]
+            {
+                let shape = [1, length];
+                if inference_model.is_null() {
+                    let path = CStr::from_ptr(model_path).to_str()?;
+                    let model_dir = PathBuf::from_str(path)?;
+                    tract_onnx::onnx().model_for_path(model_dir, None)?
+                        .with_input_fact(0, i64::fact(shape).into())?
+                        .with_input_fact(1, i64::fact(shape).into())?
+                        .with_input_fact(2, i64::fact(shape).into())?
+                        .into_typed()?
+                        .into_runnable()?
+                } else {
+                    Box::from_raw(*inference_model)
+                        .with_input_fact(0, i64::fact(shape).into())?
+                        .with_input_fact(1, i64::fact(shape).into())?
+                        .with_input_fact(2, i64::fact(shape).into())?
+                        .into_typed()?
+                        .into_runnable()?
+                }
+            }
+
+            #[cfg(not(feature = "use_sys_time"))]
+            {
+                if inference_model.is_null() {
+                    let path = CStr::from_ptr(model_path).to_str()?;
+                    let model_dir = PathBuf::from_str(path)?;
+                    tract_onnx::onnx().model_for_path(model_dir, None)?
+                        .into_optimized()?
+                        .into_runnable()?
+                } else {
+                    Box::from_raw(*inference_model)
+                        .into_optimized()?
+                        .into_runnable()?
+                }
+            }
+        };
+
+        let mask_pos = input_ids
+            .iter()
+            .position(|&x| x == tokenizer.token_to_id("[MASK]").unwrap())
+            .ok_or_else(|| anyhow::anyhow!("Mask token not found"))?;
+
+        let input_ids_tensor: Tensor = tract_ndarray::Array2::from_shape_vec(
+            (1, length),
+            input_ids.iter().map(|&x| x as i64).collect(),
+        )?
+        .into();
+        let attention_mask_tensor: Tensor = tract_ndarray::Array2::from_shape_vec(
+            (1, length),
+            attention_mask.iter().map(|&x| x as i64).collect(),
+        )?
+        .into();
+        let token_type_ids_tensor: Tensor = tract_ndarray::Array2::from_shape_vec(
+            (1, length),
+            token_type_ids.iter().map(|&x| x as i64).collect(),
+        )?
+        .into();
+
+        let outputs = model.run(tvec!(input_ids_tensor.into(), attention_mask_tensor.into(), token_type_ids_tensor.into()))?;
+        let logits = outputs[0].to_array_view::<f32>()?;
+        let logits = logits.slice(s![0, mask_pos, ..]);
+        let word_id = logits.iter().zip(0..).max_by(|a, b| a.0.partial_cmp(b.0).unwrap()).unwrap().1;
+        let word = tokenizer.id_to_token(word_id);
+
+        // Handle the Option and create a CString
+        let re = regex::Regex::new(r"\s+")
+            .map_err(|e| anyhow::anyhow!("Failed to compile regex: {}", e))?;
+        let clean_string = match word {
+            Some(word) => re.replace_all(word.trim(), " ").to_string(),
+            None => "No word found".to_string(),
+        };
+        let formatted_string = format!("Inference: {}", clean_string);
+        let c_word = CString::new(formatted_string)?;
+        *inference = c_word.into_raw(); // Pass the result back
+
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("Before drop");
+        }
+        drop(model);
+        drop(tokenizer);
+        drop(tokenizer_output);
+        drop(outputs);
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("After drop");
+        }
+
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_run_gpt2(
+    model_path: *const c_char,
+    tokenizer_buffer: *const u8,
+    tokenizer_buffer_size: usize,
+    inference: *mut *mut c_char,
+    num_tokens: usize,
+    prompt: *const c_char,
+    inference_model: *mut *mut TractLlmInferenceModel
+) -> TRACT_RESULT  {
+    // Define the result to be returned
+    let result = (|| -> Result<(), anyhow::Error> {
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("Start gpt2");
+        }
+        let tokenizer_data = unsafe {
+            slice::from_raw_parts(tokenizer_buffer, tokenizer_buffer_size)
+        };
+
+        // Create the tokenizer from bytes
+        let tokenizer_result = Tokenizer::from_bytes(tokenizer_data);
+        let tokenizer = match tokenizer_result {
+            Ok(tokenizer) => tokenizer,
+            Err(_) => return Err(anyhow::anyhow!("Failed to read tokenizer")),
+        };
+
+        let prompt_cstr = unsafe { CStr::from_ptr(prompt) };
+        let prompt_str = prompt_cstr.to_str()?;
+        let tokenizer_output_result = tokenizer.encode(prompt_str, true);
+        let tokenizer_output = match tokenizer_output_result {
+            Ok(output) => output,
+            Err(_) => return Err(anyhow::anyhow!("Failed to encode text")),
+        };
+
+        let mut current_ids: Vec<u32> = tokenizer_output.get_ids().to_vec();
+        let mut current_attention_mask: Vec<u32> = tokenizer_output.get_attention_mask().to_vec();
+
+        let model = {
+            #[cfg(feature = "use_sys_time")]
+            {
+                let shape_input_ids = [1, current_ids.len()];
+                let shape_attention_mask = [1, current_attention_mask.len()];
+                if inference_model.is_null() {
+                    let path = CStr::from_ptr(model_path).to_str()?;
+                    let model_dir = PathBuf::from_str(path)?;
+                    tract_onnx::onnx().model_for_path(model_dir, None)?
+                        .with_input_fact(0, i64::fact(shape_input_ids).into())?
+                        .with_input_fact(1, i64::fact(shape_attention_mask).into())?
+                        .into_typed()?
+                        .into_runnable()?
+                } else {
+                    Box::from_raw(*inference_model)
+                        .with_input_fact(0, i64::fact(shape_input_ids).into())?
+                        .with_input_fact(1, i64::fact(shape_attention_mask).into())?
+                        .into_typed()?
+                        .into_runnable()?
+                }
+            }
+
+            #[cfg(not(feature = "use_sys_time"))]
+            {
+                if inference_model.is_null() {
+                    let path = CStr::from_ptr(model_path).to_str()?;
+                    let model_dir = PathBuf::from_str(path)?;
+                    tract_onnx::onnx().model_for_path(model_dir, None)?
+                        .into_optimized()?
+                        .into_runnable()?
+                } else {
+                    Box::from_raw(*inference_model)
+                        .into_optimized()?
+                        .into_runnable()?
+                }
+            }
+        };
+
+        for _ in 0..num_tokens {
+            let input_ids_tensor: Tensor = Array2::from_shape_vec(
+                (1, current_ids.len()),
+                current_ids.iter().map(|&x| x as i64).collect(),
+            )?.into();
+
+            let attention_mask_tensor: Tensor = Array2::from_shape_vec(
+                (1, current_attention_mask.len()),
+                current_attention_mask.iter().map(|&x| x as i64).collect(),
+            )?.into();
+
+            let outputs = model.run(tvec!(input_ids_tensor.into(), attention_mask_tensor.into()))?;
+            let logits = outputs[0].to_array_view::<f32>()?;
+            let last_logits = logits.slice(s![0, -1, ..]);
+
+            // Top-k sampling
+            let k = 10;
+            let mut scored: Vec<(usize, f32)> = last_logits
+                .iter()
+                .cloned()
+                .enumerate()
+                .collect();
+
+            scored.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+            let top_k = &scored[..k.min(scored.len())];
+            let next_token_id = top_k
+                .choose(&mut thread_rng())
+                .map(|(idx, _)| *idx)
+                .unwrap() as u32;
+
+            // Stop if model outputs <|endoftext|> token (50256 in GPT-2)
+            if next_token_id == 50256 {
+                break;
+            }
+
+            current_ids.push(next_token_id);
+            current_attention_mask.push(1);
+
+            #[cfg(not(feature = "use_sys_time"))]
+            {
+                print_memory("Before dropping outputs");
+            }
+            drop(outputs);
+            #[cfg(not(feature = "use_sys_time"))]
+            {
+                print_memory("After dropping outputs");
+            }
+        }
+
+        let generated_text = tokenizer.decode(&current_ids, true).map_err(|e| {
+            anyhow::anyhow!("Failed to decode tokenizer output: {}", e)
+        })?;
+        
+        // Handle the Option and create a CString
+        let re = regex::Regex::new(r"\s+")
+            .map_err(|e| anyhow::anyhow!("Failed to compile regex: {}", e))?;
+        let clean_string = re.replace_all(generated_text.trim(), " ").to_string();
+        let formatted_string = format!("Inference: {}", clean_string);
+        let c_word = CString::new(formatted_string)?;
+        *inference = c_word.into_raw(); // Pass the result back
+        
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("Before drop");
+        }
+        drop(model);
+        drop(tokenizer);
+        drop(tokenizer_output);
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("After drop");
+        }
+
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
 /// Creates an instance of an ONNX framework and parser that can be used to load models.
 ///
 /// The returned object should be destroyed with `tract_nnef_destroy` once the model
@@ -807,13 +2037,13 @@ pub unsafe extern "C" fn tract_onnx_destroy(onnx: *mut *mut TractOnnx) -> TRACT_
 /// `path` is a null-terminated utf-8 string pointer. It must point to a `.onnx` model file.
 use std::sync::Arc;
 #[no_mangle]
-pub unsafe extern "C" fn tract_onnx_model_for_path(
+pub unsafe extern "C" fn tract_onnx_model_for_path_cnn(
     onnx: *const TractOnnx,
     path: *const c_char,
     model: *mut *mut TractInferenceModel
 ) -> TRACT_RESULT {
     wrap(|| unsafe {
-        //Inside tract_onnx_model_for_path function
+        // Inside tract_onnx_model_for_path function
         check_not_null!(onnx, path, model);
 
         *model = std::ptr::null_mut();
@@ -1015,7 +2245,7 @@ pub unsafe extern "C" fn tract_inference_model_into_optimized(
 
 /// Function to release the inference_model
 #[no_mangle]
-pub unsafe extern "C" fn tract_inference_model_release(
+pub unsafe extern "C" fn tract_cnn_inference_model_release(
     model: *mut *mut TractInferenceModel,
 ) -> TRACT_RESULT {
     wrap(|| unsafe {
@@ -1057,13 +2287,6 @@ pub unsafe extern "C" fn tract_inference_model_into_typed(
     })
 }
 
-/// Destroy an InferenceModel.
-#[no_mangle]
-pub unsafe extern "C" fn tract_inference_model_destroy(
-    model: *mut *mut TractInferenceModel,
-) -> TRACT_RESULT {
-    release!(model)
-}
 // TYPED MODEL
 
 pub struct TractModel(tract_rs::Model);
@@ -1485,7 +2708,7 @@ pub unsafe extern "C" fn tract_value_from_bytes(
 
 /// Destroy a value.
 #[no_mangle]
-pub unsafe extern "C" fn tract_value_destroy(value: *mut *mut TractValue) -> TRACT_RESULT {
+pub unsafe extern "C" fn tract_cnn_value_destroy(value: *mut *mut TractValue) -> TRACT_RESULT {
     release!(value)
 }
 

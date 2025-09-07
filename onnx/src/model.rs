@@ -60,6 +60,7 @@ impl<'a> ParsingContext<'a> {
 
     pub fn parse_graph(&self, graph: &pb::GraphProto, weights_data: Option<&[u8]>) -> TractResult<ParseResult> {
         let mut ctx = self.clone();
+        println!("Symbol table: {:?}", ctx.symbol_table);
         ctx.parent_graphs.push(graph);
         let mut model =
             InferenceModel { symbol_table: ctx.symbol_table.clone(), ..InferenceModel::default() };
@@ -233,9 +234,20 @@ impl Default for Onnx {
     }
 }
 
+use std::sync::OnceLock;
+use tract_core::internal::SymbolTable;
+
+static GLOBAL_SYMBOL_TABLE: OnceLock<SymbolTable> = OnceLock::new();
+
+fn get_global_symbol_table() -> &'static SymbolTable {
+    GLOBAL_SYMBOL_TABLE.get_or_init(|| SymbolTable::default())
+}
+
 impl Onnx {
     pub fn parse(&self, proto: &pb::ModelProto, path: Option<&str>, weights_data: Option<&[u8]>) -> TractResult<ParseResult> {
-        self.parse_with_symbols(proto, path, &SymbolTable::default(), weights_data)
+        let symbol_table = get_global_symbol_table();
+        println!("GLOBAL SYMBOL_TABLE: {:?}", symbol_table);
+        self.parse_with_symbols(proto, path, &*symbol_table, weights_data)
     }
     pub fn parse_with_symbols(
         &self,
@@ -267,6 +279,7 @@ impl Onnx {
             symbol_table: symbol_table.clone(),
         };
         trace!("created ParsingContext");
+        println!("GLOBAL SYMBOL_TABLE: {:?}", symbol_table);
         ctx.parse_graph(graph, weights_data)
     }
 
@@ -293,6 +306,7 @@ impl Onnx {
 
 impl Framework<pb::ModelProto, InferenceModel> for Onnx {
     fn model_for_path(&self, p: impl AsRef<path::Path>, weights_data: Option<&[u8]>) -> TractResult<InferenceModel> {
+        println!("Inside the model_for_path function in wasm");
         let mut path = PathBuf::new();
         path.push(&p);
         let mut dir: Option<&str> = None;
@@ -319,6 +333,8 @@ impl Framework<pb::ModelProto, InferenceModel> for Onnx {
 
     #[cfg(not(target_family = "wasm"))]
     fn proto_model_for_path(&self, p: impl AsRef<path::Path>) -> TractResult<pb::ModelProto> {
+        // Inside the proto_model_for_path function in wasm
+        println!("Inside the proto_model_for_path function in wasm");
         let p = p.as_ref();
         let map = unsafe {
             memmap2::Mmap::map(&fs::File::open(p).with_context(|| format!("Opening {p:?}"))?)?

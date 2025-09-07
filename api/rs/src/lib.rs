@@ -88,6 +88,7 @@ pub struct Onnx(tract_onnx::Onnx);
 impl OnnxInterface for Onnx {
     type InferenceModel = InferenceModel;
     fn model_for_path(&self, path: impl AsRef<Path>) -> Result<Self::InferenceModel> {
+        // Inside the model_for_path function in OnnxInterface
         Ok(InferenceModel(self.0.model_for_path(path, None)?))
     }
 }

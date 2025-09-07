@@ -45,6 +45,7 @@ impl InferenceModelExt for InferenceModel {
 
     /// Perform early transformation before going typed.
     fn incorporate(self) -> TractResult<InferenceModel> {
+        // Inside incorporate function in infer/model.rs
         let mut model = self;
         loop {
             let mut done_something = false;
@@ -91,9 +92,13 @@ impl InferenceModelExt for InferenceModel {
 
     /// Attempt full analyse and conversion to TypedModel.
     fn into_typed(mut self) -> TractResult<TypedModel> {
+        // Inside into_typed function for non transformers
+        println!("into typed");
         use tract_core::internal::translator::Translate;
 
+    
         self.analyse(false)?;
+        println!("after analysis");
         let m = self.incorporate()?;
 
         #[derive(Debug)]
@@ -120,7 +125,11 @@ impl InferenceModelExt for InferenceModel {
                         })
                         .collect()
                 } else {
-                    let outputs = node.op.to_typed(source, node, target, mapping)?;
+                    let outputs = node.op.to_typed(source, node, target, mapping).map_err(|e| {
+                        println!("to typed failed: {}", e);
+                        e
+                    })?;
+                    //let outputs = node.op.to_typed(source, node, target, mapping)?;
                     for output in &outputs {
                         let fact = target.outlet_fact(*output)?;
                         fact.consistent().with_context(|| {
@@ -145,6 +154,8 @@ impl InferenceModelExt for InferenceModel {
     /// transformation needs to happen. Aternaltively, use to_typed() and
     /// manipulate the TypedModel for more control.
     fn into_optimized(self) -> TractResult<TypedModel> {
+        // Inside into_optimized function for transformers
+        println!("Into typed and optimized");
         self.into_typed()?.into_optimized()
     }
 }
