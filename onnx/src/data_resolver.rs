@@ -67,15 +67,12 @@ impl ModelDataResolver for MmapDataResolver {
         length: Option<usize>,
         weights_decrypted: Option<&[u8]>
     ) -> TractResult<()> {
-        println!("here before weights_decrypted");
         if let Some(weights_decrypted) = weights_decrypted {
-            println!("hereee");
             match length {
                 Some(length) => buf.extend_from_slice(&weights_decrypted[offset..offset + length]),
                 None => buf.extend_from_slice(&weights_decrypted[offset..]),
             }
         } else {
-            println!("here before parse");
             bail!("no model path was specified in the parsing context, yet external data was detected. aborting");
         }      
         Ok(())

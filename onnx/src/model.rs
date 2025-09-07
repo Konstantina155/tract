@@ -333,7 +333,6 @@ impl Framework<pb::ModelProto, InferenceModel> for Onnx {
 
         let proto = self.proto_model_for_path(p, Some(params))?;
         // The graph is created in below function
-        println!("here before parse");
         let ParseResult { model, unresolved_inputs, .. } = self.parse(&proto, dir, weights_decrypted)?;
         if unresolved_inputs.len() > 0 {
             bail!("Could not resolve inputs at top-level: {:?}", unresolved_inputs)
