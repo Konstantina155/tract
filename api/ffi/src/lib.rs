@@ -456,10 +456,75 @@ pub unsafe extern "C" fn tract_my_inference_model_output_name(
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn tract_create_tokenizer(
+    tokenizer_buffer: *const u8, 
+    tokenizer_buffer_size: usize,
+    tokenizer_ptr: *mut *mut c_void,
+) -> TRACT_RESULT {
+    // Define the result to be returned
+    let result = (|| -> Result<(), anyhow::Error> {
+        if tokenizer_ptr.is_null() {
+            return Err(anyhow::anyhow!("Output pointer is null"));
+        }
+        if tokenizer_buffer.is_null() || tokenizer_buffer_size == 0 {
+            return Err(anyhow::anyhow!("Input buffer is null or empty"));
+        }
+
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("Before creating tokenizer");
+        }
+
+        let tokenizer_data = slice::from_raw_parts(tokenizer_buffer, tokenizer_buffer_size);
+        let tokenizer = Tokenizer::from_bytes(tokenizer_data)
+            .map_err(|e| anyhow::anyhow!("Tokenizer creation failed: {}", e))?;
+
+        *tokenizer_ptr = Box::into_raw(Box::new(tokenizer)) as *mut c_void;
+
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("After creatting tokenzer");
+        }
+
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_free_tokenizer(
+    tokenizer_ptr: *mut *mut c_void,
+) -> TRACT_RESULT {
+    // Define the result to be returned
+    let result = (|| -> Result<(), anyhow::Error> {
+        if tokenizer_ptr.is_null() || (*tokenizer_ptr).is_null() {
+            return Err(anyhow::anyhow!("Received null pointer to tokenizer"));
+        }
+
+        let boxed: Box<Tokenizer> = Box::from_raw(*tokenizer_ptr as *mut Tokenizer);
+        *tokenizer_ptr = std::ptr::null_mut();
+        drop(boxed);
+
+        unsafe {
+            onig_sys::onig_end();
+        }
+
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("After onig_end");
+        }
+
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn tract_run_albert(
     model_path: *const c_char,
-    tokenizer_buffer: *const u8,
-    tokenizer_buffer_size: usize,
+    tokenizer_ptr: *mut c_void,
     inference: *mut *mut c_char,
     params: *const tract_core::framework::EncryptionParameters,
     inference_model: *mut *mut MyInferenceModel
@@ -470,16 +535,8 @@ pub unsafe extern "C" fn tract_run_albert(
         {
             print_memory("Start albert");
         }
-        let tokenizer_data = unsafe {
-            slice::from_raw_parts(tokenizer_buffer, tokenizer_buffer_size)
-        };
-
-        // Create the tokenizer from bytes
-        let tokenizer_result = Tokenizer::from_bytes(tokenizer_data);
-        let tokenizer = match tokenizer_result {
-            Ok(tokenizer) => tokenizer,
-            Err(_) => return Err(anyhow::anyhow!("Failed to read tokenizer")),
-        };
+        
+        let tokenizer = &*(tokenizer_ptr as *mut Tokenizer);
 
         let text = "Paris is the [MASK] of France.";
         let tokenizer_output_result = tokenizer.encode(text, true);
@@ -593,8 +650,7 @@ pub unsafe extern "C" fn tract_run_albert(
 #[no_mangle]
 pub unsafe extern "C" fn tract_run_gpt2(
     model_path: *const c_char,
-    tokenizer_buffer: *const u8,
-    tokenizer_buffer_size: usize,
+    tokenizer_ptr: *mut c_void,
     inference: *mut *mut c_char,
     params: *const tract_core::framework::EncryptionParameters,
     num_tokens: usize,
@@ -607,16 +663,8 @@ pub unsafe extern "C" fn tract_run_gpt2(
         {
             print_memory("Start gpt2");
         }
-        let tokenizer_data = unsafe {
-            slice::from_raw_parts(tokenizer_buffer, tokenizer_buffer_size)
-        };
-
-        // Create the tokenizer from bytes
-        let tokenizer_result = Tokenizer::from_bytes(tokenizer_data);
-        let tokenizer = match tokenizer_result {
-            Ok(tokenizer) => tokenizer,
-            Err(_) => return Err(anyhow::anyhow!("Failed to read tokenizer")),
-        };
+    
+        let tokenizer = &*(tokenizer_ptr as *mut Tokenizer);
        
         let prompt_cstr = unsafe { CStr::from_ptr(prompt) };
         let prompt_str = prompt_cstr.to_str()?;
@@ -747,8 +795,7 @@ pub unsafe extern "C" fn tract_run_gpt2(
 #[no_mangle]
 pub unsafe extern "C" fn tract_run_latest_models(
     model_path: *const c_char,
-    tokenizer_buffer: *const u8,
-    tokenizer_buffer_size: usize,
+    tokenizer_ptr: *mut c_void,
     inference: *mut *mut c_char,
     params: *const tract_core::framework::EncryptionParameters,
     params_weights: *const tract_core::framework::EncryptionParameters,
@@ -762,16 +809,8 @@ pub unsafe extern "C" fn tract_run_latest_models(
         {
             print_memory("Start latest_model");
         }
-        let tokenizer_data = unsafe {
-            slice::from_raw_parts(tokenizer_buffer, tokenizer_buffer_size)
-        };
-
-        // Create the tokenizer from bytes
-        let tokenizer_result = Tokenizer::from_bytes(tokenizer_data);
-        let tokenizer = match tokenizer_result {
-            Ok(tokenizer) => tokenizer,
-            Err(_) => return Err(anyhow::anyhow!("Failed to read tokenizer")),
-        };
+        
+        let tokenizer = &*(tokenizer_ptr as *mut Tokenizer);
 
         let prompt_cstr = unsafe { CStr::from_ptr(prompt) };
         let prompt_str = prompt_cstr.to_str()?;
