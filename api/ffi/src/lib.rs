@@ -633,7 +633,6 @@ pub unsafe extern "C" fn tract_run_albert(
             print_memory("Before drop");
         }
         drop(model);
-        drop(tokenizer);
         drop(tokenizer_output);
         drop(outputs);
         #[cfg(not(feature = "use_sys_time"))]
@@ -691,6 +690,7 @@ pub unsafe extern "C" fn tract_run_gpt2(
                         .into_typed()?
                         .into_runnable()?
                 } else {
+                    let owned = unsafe { Box::from_raw(*inference_model) };
                     Box::from_raw(*inference_model)
                         .with_input_fact(0, i64::fact(shape_input_ids).into())?
                         .with_input_fact(1, i64::fact(shape_attention_mask).into())?
@@ -708,7 +708,10 @@ pub unsafe extern "C" fn tract_run_gpt2(
                         .into_optimized()?
                         .into_runnable()?
                 } else {
-                    Box::from_raw(*inference_model).into_optimized()?.into_runnable()?
+                    let owned_inference_model = Box::from_raw(*inference_model);
+                    let cloned_inference_model = owned_inference_model.clone();
+                    let _ = Box::into_raw(owned_inference_model);
+                    cloned_inference_model.into_optimized()?.into_runnable()?
                 }
             }
         };
@@ -779,7 +782,6 @@ pub unsafe extern "C" fn tract_run_gpt2(
             print_memory("Before drop");
         }
         drop(model);
-        drop(tokenizer);
         drop(tokenizer_output);
         #[cfg(not(feature = "use_sys_time"))]
         {
@@ -950,7 +952,6 @@ pub unsafe extern "C" fn tract_run_latest_models(
             print_memory("Before drop");
         }
         drop(model);
-        drop(tokenizer);
         drop(tokenizer_output);
         #[cfg(not(feature = "use_sys_time"))]
         {
