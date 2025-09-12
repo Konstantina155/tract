@@ -237,21 +237,18 @@ enum TRACT_RESULT tract_update_input_values_llm(void **inputs,
                                                 uintptr_t num_outputs);
 
 enum TRACT_RESULT tract_run_latest_models(const char *model_path,
-                                          const uint8_t *tokenizer_buffer,
-                                          uintptr_t tokenizer_buffer_size,
+                                          void *tokenizer_ptr,
                                           char **inference,
                                           uintptr_t num_tokens,
                                           const char *prompt);
 
 enum TRACT_RESULT tract_run_albert(const char *model_path,
-                                   const uint8_t *tokenizer_buffer,
-                                   uintptr_t tokenizer_buffer_size,
+                                   void *tokenizer_ptr,
                                    char **inference,
                                    struct TractLlmInferenceModel **inference_model);
 
 enum TRACT_RESULT tract_run_gpt2(const char *model_path,
-                                 const uint8_t *tokenizer_buffer,
-                                 uintptr_t tokenizer_buffer_size,
+                                 void *tokenizer_ptr,
                                  char **inference,
                                  uintptr_t num_tokens,
                                  const char *prompt,

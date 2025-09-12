@@ -1563,8 +1563,7 @@ pub unsafe extern "C" fn tract_update_input_values_llm(
 #[no_mangle]
 pub unsafe extern "C" fn tract_run_latest_models(
     model_path: *const c_char,
-    tokenizer_buffer: *const u8,
-    tokenizer_buffer_size: usize,
+    tokenizer_ptr: *mut c_void,
     inference: *mut *mut c_char,
     num_tokens: usize,
     prompt: *const c_char,
@@ -1575,16 +1574,8 @@ pub unsafe extern "C" fn tract_run_latest_models(
         {
             print_memory("Start latest_model");
         }    
-        let tokenizer_data = unsafe {
-            slice::from_raw_parts(tokenizer_buffer, tokenizer_buffer_size)
-        };
-
-        // Create the tokenizer from bytes
-        let tokenizer_result = Tokenizer::from_bytes(tokenizer_data);
-        let tokenizer = match tokenizer_result {
-            Ok(tokenizer) => tokenizer,
-            Err(_) => return Err(anyhow::anyhow!("Failed to read tokenizer")),
-        };
+        
+        let tokenizer = &*(tokenizer_ptr as *mut Tokenizer);
 
         let prompt_cstr = unsafe { CStr::from_ptr(prompt) };
         let prompt_str = prompt_cstr.to_str()?;
@@ -1711,7 +1702,6 @@ pub unsafe extern "C" fn tract_run_latest_models(
             print_memory("Before drop");
         }
         drop(model);
-        drop(tokenizer);
         drop(tokenizer_output);
         #[cfg(not(feature = "use_sys_time"))]
         {
@@ -1727,8 +1717,7 @@ pub unsafe extern "C" fn tract_run_latest_models(
 #[no_mangle]
 pub unsafe extern "C" fn tract_run_albert(
     model_path: *const c_char,
-    tokenizer_buffer: *const u8,
-    tokenizer_buffer_size: usize,
+    tokenizer_ptr: *mut c_void,
     inference: *mut *mut c_char,
     inference_model: *mut *mut TractLlmInferenceModel
 ) -> TRACT_RESULT {
@@ -1738,17 +1727,8 @@ pub unsafe extern "C" fn tract_run_albert(
         {
             print_memory("Start albert");
         }
-        let tokenizer_data = unsafe {
-            slice::from_raw_parts(tokenizer_buffer, tokenizer_buffer_size)
-        };
-
-        // Create the tokenizer from bytes
-        let tokenizer_result = Tokenizer::from_bytes(tokenizer_data);
-        let tokenizer = match tokenizer_result {
-            Ok(tokenizer) => tokenizer,
-            Err(_) => return Err(anyhow::anyhow!("Failed to read tokenizer")),
-        };
-
+        
+        let tokenizer = &*(tokenizer_ptr as *mut Tokenizer);
 
         let text = "Paris is the [MASK] of France.";
         let tokenizer_output_result = tokenizer.encode(text, true);
@@ -1844,7 +1824,6 @@ pub unsafe extern "C" fn tract_run_albert(
             print_memory("Before drop");
         }
         drop(model);
-        drop(tokenizer);
         drop(tokenizer_output);
         drop(outputs);
         #[cfg(not(feature = "use_sys_time"))]
@@ -1861,8 +1840,7 @@ pub unsafe extern "C" fn tract_run_albert(
 #[no_mangle]
 pub unsafe extern "C" fn tract_run_gpt2(
     model_path: *const c_char,
-    tokenizer_buffer: *const u8,
-    tokenizer_buffer_size: usize,
+    tokenizer_ptr: *mut c_void,
     inference: *mut *mut c_char,
     num_tokens: usize,
     prompt: *const c_char,
@@ -1874,16 +1852,8 @@ pub unsafe extern "C" fn tract_run_gpt2(
         {
             print_memory("Start gpt2");
         }
-        let tokenizer_data = unsafe {
-            slice::from_raw_parts(tokenizer_buffer, tokenizer_buffer_size)
-        };
-
-        // Create the tokenizer from bytes
-        let tokenizer_result = Tokenizer::from_bytes(tokenizer_data);
-        let tokenizer = match tokenizer_result {
-            Ok(tokenizer) => tokenizer,
-            Err(_) => return Err(anyhow::anyhow!("Failed to read tokenizer")),
-        };
+        
+        let tokenizer = &*(tokenizer_ptr as *mut Tokenizer);
 
         let prompt_cstr = unsafe { CStr::from_ptr(prompt) };
         let prompt_str = prompt_cstr.to_str()?;
@@ -2000,7 +1970,6 @@ pub unsafe extern "C" fn tract_run_gpt2(
             print_memory("Before drop");
         }
         drop(model);
-        drop(tokenizer);
         drop(tokenizer_output);
         #[cfg(not(feature = "use_sys_time"))]
         {

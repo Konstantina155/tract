@@ -9,6 +9,8 @@ endif
 
 all: mobilenet
 
+build: tract.h libtract.a mobilenet.c
+
 mobilenet: tract.h libtract.a mobilenet.c
 	cc -g mobilenet.c -o mobilenet $(CFLAGS) -L. -I. -ltract -lm -lpthread -ldl
 
