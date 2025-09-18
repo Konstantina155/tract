@@ -659,25 +659,6 @@ pub unsafe extern "C" fn tract_value_from_bytes_llm(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn tract_llm_shape_destroy(
-    value: *mut *mut c_void
-) -> TRACT_RESULT {
-    // Define the result to be returned
-    let result = (|| -> Result<(), anyhow::Error> {
-        if value.is_null() || unsafe { (*value).is_null() } {
-            return Ok(());
-        }
-
-        drop(Box::from_raw(*value as *mut Vec<usize>));
-        *value = std::ptr::null_mut();
-        
-        Ok(())
-    })();
-
-    handle_error(result)
-}
-
-#[no_mangle]
 pub unsafe extern "C" fn tract_free_llm_inputs(
     inputs: *mut *mut c_void,
     num_inputs: usize,

@@ -195,8 +195,6 @@ enum TRACT_RESULT tract_value_from_bytes_llm(void *tokenizer_ptr,
                                              void **input_datum_types,
                                              uintptr_t num_inputs);
 
-enum TRACT_RESULT tract_llm_shape_destroy(void **value);
-
 enum TRACT_RESULT tract_free_llm_inputs(void **inputs, uintptr_t num_inputs);
 
 enum TRACT_RESULT tract_llm_inference_model_release(struct TractLlmInferenceModel **model);
