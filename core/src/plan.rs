@@ -18,7 +18,7 @@ pub struct SessionState {
 
 impl Clone for SessionState {
     fn clone(&self) -> Self {
-        println!("DEBUG: clone");
+        //println!("DEBUG: clone");
         SessionState {
             inputs: self.inputs.clone(),
             resolved_symbols: self.resolved_symbols.clone(),
@@ -30,7 +30,7 @@ impl Clone for SessionState {
 
 impl Debug for SessionState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        println!("DEBUG: fmt");
+        //println!("DEBUG: fmt");
         write!(f, "SessionState({:?})", self.resolved_symbols)
     }
 }
@@ -58,21 +58,20 @@ where
 {
     /// This contructor returns a plan that will compute all the model default outputs in one pass.
     pub fn new(model: M) -> TractResult<SimplePlan<F, O, M>> {
-        println!("DEBUG: new");
+        //println!("DEBUG: new");
         let outputs = model.borrow().output_outlets()?.to_vec();
-        println!("Outputs: {:?}", outputs);
         Self::new_for_outputs(model, &outputs)
     }
 
     /// This contructor returns a plan that will compute the specified output.
     pub fn new_for_output(model: M, output: OutletId) -> TractResult<SimplePlan<F, O, M>> {
-        println!("DEBUG: new for output");
+        //println!("DEBUG: new for output");
         Self::new_for_outputs_and_deps(model, &[output], &[])
     }
 
     /// This contructor returns a plan that will compute all specified outputs in one pass.
     pub fn new_for_outputs(model: M, outputs: &[OutletId]) -> TractResult<SimplePlan<F, O, M>> {
-        println!("DEBUG: new for outputs");
+        //rintln!("DEBUG: new for outputs");
         Self::new_for_outputs_and_deps(model, outputs, &[])
     }
 
@@ -81,9 +80,8 @@ where
         outputs: &[OutletId],
         deps: &[(usize, usize)],
     ) -> TractResult<SimplePlan<F, O, M>> {
-        println!("DEBUG: new for outputs and deps");
+        //println!("DEBUG: new for outputs and deps");
         let inputs = model.borrow().input_outlets()?.iter().map(|n| n.node).collect::<Vec<usize>>();
-        println!("Inputs: {:?}\n", inputs);
         let outputs_nodes = outputs.iter().map(|n| n.node).collect::<Vec<usize>>();
         let mut order =
             eval_order_for_nodes(model.borrow().nodes(), &inputs, &outputs_nodes, deps)?;
@@ -111,7 +109,6 @@ where
                 }
             }
         }
-        println!("Symbols: {:?}\n", symbols);
         Ok(SimplePlan {
             model,
             order,
@@ -123,19 +120,19 @@ where
     }
 
     pub fn order_without_consts(&self) -> &[usize] {
-        println!("DEBUG: order without consts");
+        //println!("DEBUG: order without consts");
         &self.order
     }
 
     pub fn run(&self, inputs: TVec<TValue>) -> TractResult<TVec<TValue>> {
         //Inside in here to run the model when creating the model inputs
-        println!("DEBUG: run");
+        //println!("DEBUG: run");
         let mut state = SimpleState::new(self)?;
         state.run(inputs)
     }
 
     pub fn model(&self) -> &Graph<F, O> {
-        println!("DEBUG: model");
+        //println!("DEBUG: model");
         self.model.borrow()
     }
 }
@@ -163,11 +160,11 @@ where
     P: Borrow<SimplePlan<F, O, M>> + Clone,
 {
     pub fn new(plan: P) -> TractResult<SimpleState<F, O, M, P>> {
-        println!("DEBUG: new simplestate");
+        //println!("DEBUG: new simplestate");
         let values = vec![None; plan.borrow().model.borrow().nodes().len()];
         let session = SessionState::default();
         let model = plan.borrow().model();
-        println!("Model: {:?}", model);
+        //println!("Model: {:?}", model);
         let states: Vec<Option<Box<dyn OpState>>> = vec![None; model.nodes.len()];
         let mut state =
             SimpleState { plan, states, session_state: session, values, _phantom: PhantomData };
@@ -177,7 +174,7 @@ where
     }
 
     fn populate_consts(&mut self) {
-        println!("DEBUG: populate_consts simplestate");
+        //println!("DEBUG: populate_consts simplestate");
         for node in &self.plan.borrow().model().nodes {
             if let Some(k) = node.op_as::<Const>() {
                 self.values[node.id] = Some(tvec!(k.0.clone().into_tvalue()));
@@ -187,7 +184,7 @@ where
 
     /// Reset wires state.
     pub fn reset_turn(&mut self) -> TractResult<()> {
-        println!("DEBUG: reset_turn simplestate");
+        //println!("DEBUG: reset_turn simplestate");
         for node in &self.plan.borrow().order {
             self.values[*node] = None;
         }
@@ -196,7 +193,7 @@ where
 
     /// Reset op inner state.
     pub fn reset_op_states(&mut self) -> TractResult<()> {
-        println!("DEBUG: reset_op_states simplestate");
+        //println!("DEBUG: reset_op_states simplestate");
         let &mut SimpleState { ref plan, ref mut session_state, ref mut states, .. } = self;
         for (ix, n) in plan.borrow().model().nodes().iter().enumerate() {
             states[ix] =
@@ -206,13 +203,13 @@ where
     }
 
     pub fn run(&mut self, inputs: TVec<TValue>) -> TractResult<TVec<TValue>> {
-        println!("DEBUG: run simplestate");
+        //println!("DEBUG: run simplestate");
         // Inside in here to run the model
         self.run_plan_with_eval(inputs, self::eval)
     }
 
     pub fn exec(&mut self) -> TractResult<()> {
-        println!("DEBUG: exec simplestate");
+        //println!("DEBUG: exec simplestate");
         self.exec_plan_with_eval(self::eval)
     }
 
@@ -231,7 +228,6 @@ where
         E: Into<anyhow::Error> + Send + Sync + 'static,
     {
         // Inside in here to run the model in run_plan_with_eval
-        println!("Inputs: {:?}", inputs);
         self.set_inputs(inputs)?;
         self.exec_plan_with_eval(eval)?;
         let outputs = self.outputs()?;
@@ -250,7 +246,7 @@ where
         ) -> Result<TVec<TValue>, E>,
         E: Into<anyhow::Error> + Send + Sync + 'static,
     {
-        println!("DEBUG: exec plan with eval simplestate");
+        //println!("DEBUG: exec plan with eval simplestate");
         {
             let &mut SimpleState {
                 ref plan,
@@ -273,7 +269,7 @@ where
                     println!("Running step {}, node {}", step, node);
                 }
 
-                println!("Running step {}, node {}", step, node);
+                //println!("Running step {}, node {}", step, node);
                 trace!("Running step {}, node {}", step, node);
                 let mut inputs: TVec<TValue> = tvec![];
                 for i in &node.inputs {
@@ -284,11 +280,11 @@ where
                     })?;
                     inputs.push(prec[i.slot].clone())
                 }
-                println!("  use inputs: {:?}", inputs);
+                //println!("  use inputs: {:?}", inputs);
 
                 for flush in &plan.flush_lists[step] {
                     trace!("  Ran {} can now flush {}", node, model.node(*flush));
-                    println!("  Ran {} can now flush {}", node, model.node(*flush));
+                    //println!("  Ran {} can now flush {}", node, model.node(*flush));
                     values[*flush] = None;
                 }
 
@@ -318,24 +314,6 @@ where
                 let vs = eval(session_state, states[node.id].as_deref_mut(), node, inputs.clone())
                     .map_err(|e| e.into())?;
 
-                let facts = model.node_input_facts(node.id)?;
-                 println!(
-                    "Evaluating {}: expected facts: {:?}",
-                    node,
-                    facts
-                );
-                for (ix, (v, f)) in inputs.iter().zip(facts.iter()).enumerate() {
-                    if !f.matches(v, Some(&session_state.resolved_symbols))? {
-                        println!(
-                            "Evaluating {}: input {:?}, expected {:?}, got {:?}",
-                            node,
-                            ix,
-                            f,
-                            v
-                        );
-                    }
-                }
-
                 if plan.has_unresolved_symbols {
                     for (o, v) in node.outputs.iter().zip(vs.iter()) {
                         if let Ok(f) = o.fact.to_typed_fact() {
@@ -345,10 +323,10 @@ where
                                     dim_abstract,
                                     *dim_concrete as i64,
                                 )?;
-                                println!("The plan has unresolved symbols, so -> dim_abstract:{:?} dim_concrete as i64: {:?}",
-                                    dim_abstract,
-                                    *dim_concrete as i64,
-                                );
+                                // println!("The plan has unresolved symbols, so -> dim_abstract:{:?} dim_concrete as i64: {:?}",
+                                //     dim_abstract,
+                                //     *dim_concrete as i64,
+                                // );
                             }
                         }
                     }
@@ -392,7 +370,7 @@ where
     }
 
     pub fn set_inputs(&mut self, inputs: TVec<TValue>) -> TractResult<()> {
-        println!("DEBUG: set inputs simplestate");
+        //println!("DEBUG: set inputs simplestate");
         ensure!(
             inputs.len() == self.model().inputs.len(),
             "Wrong number of inputs for model. Expected {} got {}",
@@ -406,7 +384,7 @@ where
     }
 
     fn resolve(symbols: &mut SymbolValues, expression: &TDim, provided: i64) -> TractResult<()> {
-        println!("DEBUG: resolve simplestate with symbols: {:?}, expression {:?} and provided {:?}", symbols, expression, provided);
+        //println!("DEBUG: resolve simplestate with symbols: {:?}, expression {:?} and provided {:?}", symbols, expression, provided);
         let expected = expression.eval(symbols);
         if let Ok(x) = expected.to_i64() {
             if x != provided {
@@ -424,7 +402,7 @@ where
     }
 
     pub fn set_input(&mut self, input: usize, t: TValue) -> TractResult<()> {
-        println!("DEBUG: set input simplestate");
+        //println!("DEBUG: set input simplestate");
         let outlet: OutletId = *self
             .model()
             .input_outlets()?
@@ -449,7 +427,7 @@ where
     }
 
     pub fn output(&self, id: usize) -> TractResult<&TValue> {
-        println!("DEBUG: output simplestate");
+        //println!("DEBUG: output simplestate");
         let outlet = self.model().output_outlets()?.get(id).with_context(|| {
             format!(
                 "Required output {}, only have {}",
@@ -469,7 +447,7 @@ where
     }
 
     pub fn outputs(&mut self) -> TractResult<TVec<TValue>> {
-        println!("DEBUG: outputs simplestate");
+        //println!("DEBUG: outputs simplestate");
         let SimpleState { ref plan, ref mut values, .. } = self;
         let mut v = tvec![];
         for o in plan.borrow().outputs.iter() {
@@ -485,18 +463,18 @@ where
     }
 
     pub fn set_values(&mut self, id: usize, values: TVec<TValue>) -> TractResult<()> {
-        println!("DEBUG: set values simplestate");
+        //println!("DEBUG: set values simplestate");
         self.values[id] = Some(values);
         Ok(())
     }
 
     pub fn set_value(&mut self, id: usize, value: TValue) -> TractResult<()> {
-        println!("DEBUG: set value simplestate");
+        //println!("DEBUG: set value simplestate");
         self.set_values(id, tvec!(value))
     }
 
     pub fn prepare_inputs(&self, node: usize) -> TractResult<TVec<TValue>> {
-        println!("DEBUG: prepare inputs simplestate");
+        //println!("DEBUG: prepare inputs simplestate");
         let SimpleState { ref plan, ref values, .. } = self;
         let plan = plan.borrow();
         let nodes = plan.model().nodes();
@@ -513,7 +491,7 @@ where
     }
 
     pub fn compute_one(&mut self, node: usize) -> TractResult<()> {
-        println!("DEBUG: compute one simplestate");
+        //println!("DEBUG: compute one simplestate");
         let inputs = self.prepare_inputs(node)?;
         self.compute_one_with_inputs(node, inputs)
     }
@@ -523,7 +501,7 @@ where
         node: usize,
         inputs: TVec<TValue>,
     ) -> TractResult<()> {
-        println!("DEBUG: compute one with inputs simplestate");
+        //println!("DEBUG: compute one with inputs simplestate");
         let SimpleState { ref plan, ref mut session_state, ref mut values, ref mut states, .. } =
             self;
         let plan = plan.borrow();
@@ -535,7 +513,7 @@ where
     }
 
     pub fn compute_recursively(&mut self, node: usize) -> TractResult<&[TValue]> {
-        println!("DEBUG: compute recursively");
+        //println!("DEBUG: compute recursively");
         let values = {
             #[allow(clippy::needless_collect)] // clippy bug ?
             let precs: Vec<usize> =
@@ -565,13 +543,13 @@ where
     }
 
     pub fn take_by_name(&mut self, name: &str) -> TractResult<TVec<Tensor>> {
-        println!("DEBUG: take by name simplestate");
+        //println!("DEBUG: take by name simplestate");
         let id = self.model().node_by_name(name)?.id;
         Self::take(self, id)
     }
 
     pub fn take(&mut self, id: usize) -> TractResult<TVec<Tensor>> {
-        println!("DEBUG: take simplestate");
+        //println!("DEBUG: take simplestate");
         Ok(self.values[id]
             .take()
             .ok_or_else(|| format_err!("Node is not computed"))?
@@ -581,17 +559,17 @@ where
     }
 
     pub fn plan(&self) -> &SimplePlan<F, O, M> {
-        println!("DEBUG: plan simplestate");
+        //println!("DEBUG: plan simplestate");
         self.plan.borrow()
     }
 
     pub fn model(&self) -> &Graph<F, O> {
-        println!("DEBUG: model simplestate");
+        //println!("DEBUG: model simplestate");
         self.plan().model()
     }
 
     pub fn freeze(&self) -> FrozenSimpleState<F, O, M, P> {
-        println!("DEBUG: frozen simplestate");
+        //println!("DEBUG: frozen simplestate");
         FrozenSimpleState {
             plan: self.plan.clone(),
             inputs: self
@@ -630,7 +608,7 @@ where
     F: Fact + Clone + 'static,
     O: Debug + Display + AsRef<dyn Op> + AsMut<dyn Op> + Clone + 'static,
 {
-    println!("DEBUG: eval {node}");
+    //println!("DEBUG: eval {node}");
     // eprint!("{node} {input:?}");
     let r = match state {
         Some(ref mut state) => state.eval(session_state, node.op(), input),
@@ -666,7 +644,6 @@ where
     P: Borrow<SimplePlan<F, O, M>> + Clone,
 {
     pub fn unfreeze(&self) -> SimpleState<F, O, M, P> {
-        println!("DEBUG: unfreeze frozensimplestate");
         let mut state = SimpleState {
             plan: self.plan.clone(),
             session_state: SessionState {
@@ -696,31 +673,26 @@ mod test {
 
     #[test]
     fn type_model_is_sync() {
-        println!("DEBUG: type_model_is_sync test");
         is_sync::<TypedModel>();
     }
 
     #[test]
     fn type_model_is_send() {
-        println!("DEBUG: type_model_is_send test");
         is_send::<TypedModel>();
     }
 
     #[test]
     fn type_plan_is_send() {
-        println!("DEBUG: type_plan_is_sent test");
         is_send::<TypedSimplePlan<TypedModel>>();
     }
 
     #[test]
     fn type_plan_is_sync() {
-        println!("DEBUG: type_plan_is_sync test");
         is_sync::<TypedSimplePlan<TypedModel>>();
     }
 
     #[test]
     fn frozen_type_state_is_send() {
-        println!("DEBUG: frozen_type_state_is_send test");
         is_send::<TypedFrozenSimpleState<TypedModel, TypedSimplePlan<TypedModel>>>();
     }
 }

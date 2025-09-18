@@ -60,7 +60,6 @@ impl<'a> ParsingContext<'a> {
 
     pub fn parse_graph(&self, graph: &pb::GraphProto, weights_data: Option<&[u8]>) -> TractResult<ParseResult> {
         let mut ctx = self.clone();
-        println!("Symbol table: {:?}", ctx.symbol_table);
         ctx.parent_graphs.push(graph);
         let mut model =
             InferenceModel { symbol_table: ctx.symbol_table.clone(), ..InferenceModel::default() };
@@ -306,7 +305,7 @@ impl Onnx {
 
 impl Framework<pb::ModelProto, InferenceModel> for Onnx {
     fn model_for_path(&self, p: impl AsRef<path::Path>, weights_data: Option<&[u8]>) -> TractResult<InferenceModel> {
-        println!("Inside the model_for_path function in wasm");
+        // Inside the model_for_path function in wasm
         let mut path = PathBuf::new();
         path.push(&p);
         let mut dir: Option<&str> = None;
@@ -334,7 +333,6 @@ impl Framework<pb::ModelProto, InferenceModel> for Onnx {
     #[cfg(not(target_family = "wasm"))]
     fn proto_model_for_path(&self, p: impl AsRef<path::Path>) -> TractResult<pb::ModelProto> {
         // Inside the proto_model_for_path function in wasm
-        println!("Inside the proto_model_for_path function in wasm");
         let p = p.as_ref();
         let map = unsafe {
             memmap2::Mmap::map(&fs::File::open(p).with_context(|| format!("Opening {p:?}"))?)?
