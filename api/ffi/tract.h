@@ -357,7 +357,7 @@ enum TRACT_RESULT tract_inference_model_into_optimized(struct TractInferenceMode
 /**
  * Function to release the inference_model
  */
-enum TRACT_RESULT tract_inference_model_release(struct TractInferenceModel **model);
+enum TRACT_RESULT tract_cnn_inference_model_release(struct TractInferenceModel **model);
 
 /**
  * Transform a fully analysed InferenceModel to a TypedModel.

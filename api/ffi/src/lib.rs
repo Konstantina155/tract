@@ -1768,7 +1768,7 @@ pub unsafe extern "C" fn tract_inference_model_into_optimized(
 
 /// Function to release the inference_model
 #[no_mangle]
-pub unsafe extern "C" fn tract_inference_model_release(
+pub unsafe extern "C" fn tract_cnn_inference_model_release(
     model: *mut *mut TractInferenceModel,
 ) -> TRACT_RESULT {
     wrap(|| unsafe {
