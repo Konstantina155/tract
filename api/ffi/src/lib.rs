@@ -1095,7 +1095,7 @@ pub unsafe extern "C" fn tract_generate_text_llm(
 
         #[cfg(not(feature = "use_sys_time"))]
         {
-            print_memory("Before generating text");
+            print_memory("After generating text");
         }
 
         Ok(())
