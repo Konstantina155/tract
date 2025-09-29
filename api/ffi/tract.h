@@ -195,12 +195,11 @@ enum TRACT_RESULT tract_value_from_bytes_llm(void *tokenizer_ptr,
                                              void **input_datum_types,
                                              uintptr_t num_inputs);
 
-enum TRACT_RESULT tract_free_llm_inputs(void **inputs, uintptr_t num_inputs);
+enum TRACT_RESULT tract_free_llm_inputs(void **input_values, uintptr_t num_inputs);
 
 enum TRACT_RESULT tract_llm_inference_model_release(struct TractLlmInferenceModel **model);
 
-enum TRACT_RESULT tract_inference_model_into_optimized_llm(void **_inputs,
-                                                           uintptr_t num_inputs,
+enum TRACT_RESULT tract_inference_model_into_optimized_llm(uintptr_t num_inputs,
                                                            void **input_shapefacts,
                                                            void **input_datum_types,
                                                            struct TractLlmInferenceModel **model,
@@ -221,7 +220,7 @@ enum TRACT_RESULT tract_generate_text_llm(void **inputs,
                                           char **inference,
                                           uintptr_t *next_token_id);
 
-enum TRACT_RESULT tract_update_input_values_llm(void **inputs,
+enum TRACT_RESULT tract_update_input_values_llm(void **input_values,
                                                 uintptr_t num_inputs,
                                                 uintptr_t next_token_id);
 
@@ -261,6 +260,11 @@ enum TRACT_RESULT tract_onnx_create(struct TractOnnx **onnx);
  */
 enum TRACT_RESULT tract_onnx_destroy(struct TractOnnx **onnx);
 
+/**
+ * Parse and load an ONNX model as a tract InferenceModel.
+ * println!("cargo:rerun-if-changed=tract.h");
+ * `path` is a null-terminated utf-8 string pointer. It must point to a `.onnx` model file.
+ */
 enum TRACT_RESULT tract_onnx_model_for_path_cnn(const struct TractOnnx *onnx,
                                                 const char *path,
                                                 struct TractInferenceModel **model,
@@ -569,7 +573,7 @@ enum TRACT_RESULT tract_value_from_bytes(DatumType datum_type,
 /**
  * Destroy a value.
  */
-enum TRACT_RESULT tract_value_destroy(struct TractValue **value);
+enum TRACT_RESULT tract_cnn_value_destroy(struct TractValue **value);
 
 /**
  * Inspect part of a value. Except `value`, all argument pointers can be null if only some specific bits
