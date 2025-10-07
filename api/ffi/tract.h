@@ -221,6 +221,17 @@ enum TRACT_RESULT tract_inference_model_into_optimized_and_run_llm(void **inputs
                                                                    void **output_shapefacts,
                                                                    void **output_datum_types);
 
+enum TRACT_RESULT tract_model_for_path_into_optimized_and_run_llm(const char *model_path,
+                                                                  const EncryptionParameters *params,
+                                                                  const EncryptionParameters *params_weights,
+                                                                  void **inputs,
+                                                                  uintptr_t num_inputs,
+                                                                  void **input_shapefacts,
+                                                                  void **input_datum_types,
+                                                                  void **outputs,
+                                                                  void **output_shapefacts,
+                                                                  void **output_datum_types);
+
 enum TRACT_RESULT tract_generate_text_llm(void **inputs,
                                           uintptr_t num_inputs,
                                           void *tokenizer_ptr,

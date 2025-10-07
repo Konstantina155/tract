@@ -957,6 +957,123 @@ pub unsafe extern "C" fn tract_inference_model_into_optimized_and_run_llm(
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn tract_model_for_path_into_optimized_and_run_llm(
+    model_path: *const c_char,
+    params: *const tract_core::framework::EncryptionParameters,
+    params_weights: *const tract_core::framework::EncryptionParameters,
+    inputs: *mut *mut c_void,
+    num_inputs: usize,
+    input_shapefacts: *mut *mut c_void,
+    input_datum_types: *mut *mut c_void,
+    outputs: *mut *mut c_void,
+    output_shapefacts: *mut *mut c_void,
+    output_datum_types: *mut *mut c_void,
+) -> TRACT_RESULT {
+    // Define the result to be returned
+    let result = (|| -> Result<(), anyhow::Error> {
+        // Load the model
+        let path = CStr::from_ptr(model_path).to_str()?;
+        let model_dir = PathBuf::from_str(path)?;
+        let decrypted = open_weights_file(Some(path), Some(params_weights))?;
+        let weights_data = if decrypted.is_empty() {
+            None
+        } else {
+            Some(decrypted)
+        };
+
+        let inference_model = tract_onnx::onnx().model_for_path(model_dir, Some(params), weights_data.as_deref())?;
+
+        let shapefacts: Vec<Option<Vec<ShapeFact>>> = unsafe {
+            std::slice::from_raw_parts(input_shapefacts, num_inputs)
+                .iter()
+                .map(|&ptr| {
+                    if ptr.is_null() {
+                        None
+                    } else {
+                        let shapefact_ref = &*(ptr as *mut Vec<ShapeFact>);
+                        Some(shapefact_ref.clone())
+                    }
+                })
+                .collect()
+        };
+
+        let mut datum_types: Vec<tract_core::prelude::DatumType> = unsafe {
+            std::slice::from_raw_parts(input_datum_types, num_inputs)
+                .iter()
+                .map(|&ptr| {
+                    if ptr.is_null() {
+                        tract_core::prelude::DatumType::I64
+                    } else {
+                        let datum_ref = &*(ptr as *mut tract_core::prelude::DatumType);
+                        datum_ref.clone()
+                    }
+                })
+                .collect()
+        };
+
+        let mut model_builder = inference_model;
+        for (i, shapefact_opt) in shapefacts.iter().enumerate() {
+            match shapefact_opt {
+                Some(shapefact_vec) => {
+                    let shapefact = &shapefact_vec[0];
+                    let dims: TVec<TDim> = shapefact.to_tvec();
+                    if datum_types[i] == TDim::datum_type() {
+                        datum_types[i] = i64::datum_type();
+                    }
+                    let input_fact = InferenceFact::dt_shape(datum_types[i], dims);
+                    model_builder = model_builder.with_input_fact(i, input_fact)?;
+                },
+                None => {}
+            }
+        }
+
+        let optimized = model_builder.into_optimized().map_err(|e| {
+            eprintln!("Failed to convert to typed model: {}", e);
+            e
+        })?;
+        
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("Start running llm");
+        }        
+
+        let model_inputs: SmallVec<[TValue; 4]> = unsafe {
+            std::slice::from_raw_parts(inputs, num_inputs)
+                .iter()
+                .map(|&ptr| {
+                    let tensor_ref = &*(ptr as *mut Tensor);
+                    TValue::from(tensor_ref.clone())
+                })
+                .collect()
+        };
+    
+        for (ix, outlet) in optimized.outputs.iter().enumerate() {
+            let fact = optimized.outlet_fact(*outlet)?;
+            let shapefacts_vec: Vec<ShapeFact> = vec![fact.shape.clone()];
+            *(output_shapefacts.add(ix)) = Box::into_raw(Box::new(shapefacts_vec)) as *mut c_void;
+        }
+
+        let model = optimized.into_runnable()?;
+        
+        let output_vectors = model.run(model_inputs)?;
+        for (i, output) in output_vectors.into_iter().enumerate() {
+            let tensor = output.into_tensor();
+            *(output_datum_types.add(i)) = Box::into_raw(Box::new(tensor.datum_type())) as *mut c_void;
+            *(outputs.add(i)) = Box::into_raw(Box::new(tensor)) as *mut c_void;
+        }
+
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("Finished running llm");
+        }
+
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn tract_generate_text_llm(
     inputs: *mut *mut c_void,
     num_inputs: usize,
