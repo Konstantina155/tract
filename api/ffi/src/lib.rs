@@ -264,13 +264,10 @@ static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 /// Additional code for llms until the function tract_onnx_create().
 /// The returned char must be freed with tract_free_cstring().
-fn print_memory(
-    label: &str
-) {
+fn print_memory(label: &str) {
     epoch::advance().unwrap();
     let allocated = stats::allocated::read().unwrap();
-    let resident = stats::resident::read().unwrap();
-    println!("[{label}] Allocated: {} bytes, Resident: {} bytes", allocated, resident);
+    eprintln!("[{label}] Memory used: {} bytes", allocated);
 }
 
 fn handle_error<T>(
@@ -327,6 +324,18 @@ fn open_weights_file(
 }  
 
 #[no_mangle]
+pub extern "C" fn tract_free_onig() {
+    unsafe {
+        onig_sys::onig_end();
+    }
+    #[cfg(not(feature = "use_sys_time"))]
+    {
+        print_memory("After onig_end");
+    }
+}
+
+use std::sync::Arc;
+#[no_mangle]
 pub unsafe extern "C" fn tract_onnx_model_for_path_llm(
     model_path: *const c_char,
     inference_model: *mut *mut TractLlmInferenceModel,
@@ -344,18 +353,19 @@ pub unsafe extern "C" fn tract_onnx_model_for_path_llm(
 
         let model = tract_onnx::onnx().model_for_path(model_dir, weights_data.as_deref())?;
 
-        let input_outlets = model.input_outlets()?;
-        for outlet in input_outlets {
-            let fact = model.outlet_fact(*outlet)?;
-            println!("Input name: {}", model.node(outlet.node).name);
-            println!("Input type: {:?}", fact.datum_type);
-        }
+        // let input_outlets = model.input_outlets()?;
+        // for outlet in input_outlets {
+        //     let fact = model.outlet_fact(*outlet)?;
+        //     println!("Input name: {}", model.node(outlet.node).name);
+        //     println!("Input type: {:?}", fact.datum_type);
+        // }
 
-        // Count of inputs
-        let num_inputs = input_outlets.len();
-        println!("Number of inputs: {}", num_inputs);
+        // // Count of inputs
+        // let num_inputs = input_outlets.len();
+        // println!("Number of inputs: {}", num_inputs);
         
-        *inference_model = Box::into_raw(Box::new(model));
+        //*inference_model = Box::into_raw(Box::new(model));
+        *inference_model = Arc::into_raw(Arc::new(model)) as *mut _;
 
         Ok(())
     })();
@@ -475,21 +485,11 @@ pub unsafe extern "C" fn tract_create_tokenizer(
             return Err(anyhow::anyhow!("Input buffer is null or empty"));
         }
 
-        #[cfg(not(feature = "use_sys_time"))]
-        {
-            print_memory("Before creating tokenizer");
-        }
-
         let tokenizer_data = slice::from_raw_parts(tokenizer_buffer, tokenizer_buffer_size);
         let tokenizer = Tokenizer::from_bytes(tokenizer_data)
             .map_err(|e| anyhow::anyhow!("Tokenizer creation failed: {}", e))?;
 
         *tokenizer_ptr = Box::into_raw(Box::new(tokenizer)) as *mut c_void;
-
-        #[cfg(not(feature = "use_sys_time"))]
-        {
-            print_memory("After creatting tokenzer");
-        }
 
         Ok(())
     })();
@@ -515,16 +515,24 @@ pub unsafe extern "C" fn tract_free_tokenizer(
             onig_sys::onig_end();
         }
 
-        #[cfg(not(feature = "use_sys_time"))]
-        {
-            print_memory("After onig_end");
-        }
+        // #[cfg(not(feature = "use_sys_time"))]
+        // {
+        //     print_memory("After onig_end");
+        // }
 
         Ok(())
     })();
 
     handle_error(result)
 }
+
+pub struct LlmInputState {
+    pub ids: Vec<u32>,
+    pub attention_mask: Vec<u32>,
+    pub third_vec: Vec<u32>,
+
+}
+static mut STATE: Option<LlmInputState> = None;
 
 #[no_mangle]
 pub unsafe extern "C" fn tract_value_from_bytes_llm(
@@ -536,11 +544,6 @@ pub unsafe extern "C" fn tract_value_from_bytes_llm(
 ) -> TRACT_RESULT {
     // Define the result to be returned
     let result = (|| -> Result<(), anyhow::Error> {
-        #[cfg(not(feature = "use_sys_time"))]
-        {
-            print_memory("Start latest_model");
-        }
-
         let tokenizer_test = &*(tokenizer_ptr as *mut Tokenizer);
 
         let prompt_cstr = unsafe { CStr::from_ptr(prompt) };
@@ -551,17 +554,21 @@ pub unsafe extern "C" fn tract_value_from_bytes_llm(
             Err(_) => return Err(anyhow::anyhow!("Failed to encode text")),
         };
 
-        let current_ids: Vec<u32> = tokenizer_output.get_ids().to_vec();
-        let current_attention_mask: Vec<u32> = tokenizer_output.get_attention_mask().to_vec();   
+        STATE = Some(LlmInputState {
+            ids: tokenizer_output.get_ids().to_vec(),
+            attention_mask: tokenizer_output.get_attention_mask().to_vec(),
+            third_vec: vec![],
+        });
+        let state = STATE.as_mut().unwrap();
 
         let input_ids_tensor: Tensor = Array2::from_shape_vec(
-            (1, current_ids.len()),
-            current_ids.iter().map(|&x| x as i64).collect(),
+            (1,  state.ids.len()),
+             state.ids.iter().map(|&x| x as i64).collect(),
         )?.into();
             
         let attention_mask_tensor: Tensor = Array2::from_shape_vec(
-            (1, current_attention_mask.len()),
-            current_attention_mask.iter().map(|&x| x as i64).collect(),
+            (1, state.attention_mask.len()),
+            state.attention_mask.iter().map(|&x| x as i64).collect(),
         )?.into();
         
         if num_inputs < 1 || num_inputs > 3 {
@@ -582,15 +589,15 @@ pub unsafe extern "C" fn tract_value_from_bytes_llm(
         
             },
             _ => {
-                let third_vector : Vec<u32> = if prompt_str.contains("[MASK]") == true {
+                state.third_vec = if prompt_str.contains("[MASK]") == true {
                     tokenizer_output.get_type_ids().to_vec()
                 } else {
-                    (0..current_ids.len() as u32).collect()
+                    (0.. state.ids.len() as u32).collect()
                 };
                 
                 let third_tensor: Tensor = Array2::from_shape_vec(
-                    (1, third_vector.len()),
-                    third_vector.iter().map(|&x| x as i64).collect(),
+                    (1, state.third_vec.len()),
+                    state.third_vec.iter().map(|&x| x as i64).collect(),
                 )?.into();
 
                 *(input_values.add(0)) = Box::into_raw(Box::new(input_ids_tensor)) as *mut c_void;
@@ -604,35 +611,8 @@ pub unsafe extern "C" fn tract_value_from_bytes_llm(
             },
         };
 
-        #[cfg(not(feature = "use_sys_time"))]
-        {
-            print_memory("Before drop in creating input");
-        }
         drop(tokenizer_output);
-        #[cfg(not(feature = "use_sys_time"))]
-        {
-            print_memory("After drop in creating input");
-        }
 
-        Ok(())
-    })();
-
-    handle_error(result)
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn tract_llm_shape_destroy(
-    value: *mut *mut c_void
-) -> TRACT_RESULT {
-    // Define the result to be returned
-    let result = (|| -> Result<(), anyhow::Error> {
-        if value.is_null() || unsafe { (*value).is_null() } {
-            return Ok(());
-        }
-
-        drop(Box::from_raw(*value as *mut Vec<usize>));
-        *value = std::ptr::null_mut();
-        
         Ok(())
     })();
 
@@ -641,19 +621,19 @@ pub unsafe extern "C" fn tract_llm_shape_destroy(
 
 #[no_mangle]
 pub unsafe extern "C" fn tract_free_llm_inputs(
-    inputs: *mut *mut c_void,
+    input_values: *mut *mut c_void,
     num_inputs: usize,
 ) -> TRACT_RESULT {
     let result = (|| -> Result<(), anyhow::Error> {
-        if inputs.is_null() {
+        if input_values.is_null() {
             return Err(anyhow::anyhow!("Received null pointer to tensor pointer."));
         }
 
         for i in 0..num_inputs {
-            let ptr = *(inputs.add(i));
+            let ptr = *(input_values.add(i));
             if !ptr.is_null() {
                 drop(Box::from_raw(ptr as *mut Tensor));
-                *(inputs.add(i)) = std::ptr::null_mut();
+                *(input_values.add(i)) = std::ptr::null_mut();
             }
         }
         Ok(())
@@ -667,12 +647,9 @@ pub unsafe extern "C" fn tract_llm_inference_model_release(
     model: *mut *mut TractLlmInferenceModel,
 ) -> TRACT_RESULT {
     let result = (|| -> Result<(), anyhow::Error> {
-        if model.is_null() {
-            return Err(anyhow::anyhow!("Received null pointer to llm_inference_model pointer."));
-        }
-
+        check_not_null!(model, *model);
         let model_ptr = *model;
-        let _ = Box::from_raw(model_ptr);
+        let _ = Arc::from_raw(model_ptr);
         *model = std::ptr::null_mut();
         Ok(())
     })();
@@ -696,11 +673,8 @@ pub unsafe extern "C" fn tract_inference_model_into_typed_llm_test(
             std::slice::from_raw_parts(inputs, num_inputs)
                 .iter()
                 .map(|&ptr| {
-                    let tensor_ptr = ptr as *mut Tensor;
-                    let owned_tensor = Box::from_raw(tensor_ptr);
-                    let cloned_tensor = owned_tensor.clone();
-                    let _ = Box::into_raw(owned_tensor);
-                    (*cloned_tensor).into()
+                    let tensor_ref = &*(ptr as *mut Tensor);
+                    TValue::from(tensor_ref.clone())
                 })
                 .collect()
         };
@@ -803,7 +777,6 @@ pub unsafe extern "C" fn tract_inference_model_into_typed_llm_test(
 pub type TractLlmTransformedModel = Graph<TypedFact, Box<dyn TypedOp>>;
 #[no_mangle]
 pub unsafe extern "C" fn tract_inference_model_into_optimized_llm(
-    _inputs: *mut *mut c_void,
     num_inputs: usize,
     input_shapefacts: *mut *mut c_void,
     input_datum_types: *mut *mut c_void,
@@ -812,11 +785,6 @@ pub unsafe extern "C" fn tract_inference_model_into_optimized_llm(
 ) -> TRACT_RESULT {
     // Define the result to be returned
     let result = (|| -> Result<(), anyhow::Error> {
-        #[cfg(not(feature = "use_sys_time"))]
-        {
-            print_memory("Start optimizing the model");
-        }
-        
         let shapefacts: Vec<Option<Vec<ShapeFact>>> = unsafe {
             std::slice::from_raw_parts(input_shapefacts, num_inputs)
                 .iter()
@@ -824,11 +792,8 @@ pub unsafe extern "C" fn tract_inference_model_into_optimized_llm(
                     if ptr.is_null() {
                         None
                     } else {
-                        let shapefact_vec_ptr = ptr as *mut Vec<ShapeFact>;
-                        let owned_shapefacts = Box::from_raw(shapefact_vec_ptr);
-                        let cloned_shapefacts = owned_shapefacts.clone();
-                        let _ = Box::into_raw(owned_shapefacts);
-                        (*cloned_shapefacts).into()
+                        let shapefact_ref = &*(ptr as *mut Vec<ShapeFact>);
+                        Some(shapefact_ref.clone())
                     }
                 })
                 .collect()
@@ -841,12 +806,8 @@ pub unsafe extern "C" fn tract_inference_model_into_optimized_llm(
                     if ptr.is_null() {
                         tract_core::prelude::DatumType::I64
                     } else {
-                        let datum_ptr = ptr as *mut tract_core::prelude::DatumType;
-                        let owned_datum = Box::from_raw(datum_ptr);
-                        let cloned_datum = (*owned_datum).clone();
-                        let _ = Box::into_raw(owned_datum);
-
-                        cloned_datum
+                        let datum_ref = &*(ptr as *mut tract_core::prelude::DatumType);
+                        datum_ref.clone()
                     }
                 })
                 .collect()
@@ -866,37 +827,27 @@ pub unsafe extern "C" fn tract_inference_model_into_optimized_llm(
                     let shapefact = &shapefact_vec[0];
                     let dims: TVec<TDim> = shapefact.to_tvec();
                     if datum_types[i] == TDim::datum_type() {
-                        println!("Convert TDim to i64");
                         datum_types[i] = i64::datum_type();
                     }
                     let input_fact = InferenceFact::dt_shape(datum_types[i], dims);
-                    println!("Reclaimed shapefacts: {:?} with dt: {:?}", shapefact_vec, datum_types[i]);
                     model_builder = model_builder.with_input_fact(i, input_fact)?;
                 },
                 None => {
-                    println!("Shapefact is NULL for input: {}", i);
                     if let Ok(orig_fact) = model_ref.input_fact(i) {
-                        println!("Shapefact with dt: {:?} and shape: {:?}", datum_types[i], orig_fact.shape);
                         model_builder = model_builder.with_input_fact(i, InferenceFact::dt_shape(datum_types[i], orig_fact.shape.clone()))?;
-                    } else {
-                        println!("No original fact available for input {}, skipping", i);
                     }
                 }
             }
         }
 
-        println!("About to call into_optimized()...");
         let m = model_builder.into_optimized().map_err(|e| {
-            println!("Failed to convert to typed model: {}", e);
+            eprintln!("Failed to convert to typed model: {}", e);
             e
         })?;
 
+        let model_arc = Arc::from_raw(*model);
+        *model = Arc::into_raw(model_arc) as *mut _;
         *transformed_model = Box::into_raw(Box::new(m));
-        
-        #[cfg(not(feature = "use_sys_time"))]
-        {
-            print_memory("Finished optimizing the model");
-        }
 
         Ok(())
     })();
@@ -918,54 +869,31 @@ pub unsafe extern "C" fn tract_model_into_runnable_and_run_llm(
         #[cfg(not(feature = "use_sys_time"))]
         {
             print_memory("Start running llm");
-        }
-
-        println!("=== RAW TENSOR SHAPES DEBUG ===");
-        unsafe {
-            let raw_tensors = std::slice::from_raw_parts(inputs, num_inputs);
-            for (i, &ptr) in raw_tensors.iter().enumerate() {
-                let tensor_ptr = ptr as *mut Tensor;
-                let tensor_ref = &*tensor_ptr;
-                println!("Raw input {}: shape {:?}, dtype {:?}", 
-                        i, tensor_ref.shape(), tensor_ref.datum_type());
-            }
-        }
-        println!("=== END RAW TENSOR SHAPES DEBUG ===");
+        }        
 
         let model_inputs: SmallVec<[TValue; 4]> = unsafe {
             std::slice::from_raw_parts(inputs, num_inputs)
                 .iter()
                 .map(|&ptr| {
-                    let tensor_ptr = ptr as *mut Tensor;
-                    let owned_tensor = Box::from_raw(tensor_ptr);
-                    let cloned_tensor = owned_tensor.clone();
-                    let _ = Box::into_raw(owned_tensor);
-                    (*cloned_tensor).into()
+                    let tensor_ref = &*(ptr as *mut Tensor);
+                    TValue::from(tensor_ref.clone())
                 })
                 .collect()
         };
         
         let typed: Box<TypedModel> = Box::from_raw(*transformed_model);
+        *transformed_model = std::ptr::null_mut();
         for (ix, outlet) in typed.outputs.iter().enumerate() {
             let fact = typed.outlet_fact(*outlet)?;
-            println!("HERE: Symbolic output {} shape: {:?}", ix, fact.shape);
             let shapefacts_vec: Vec<ShapeFact> = vec![fact.shape.clone()];
             *(input_shapefacts.add(ix)) = Box::into_raw(Box::new(shapefacts_vec)) as *mut c_void;
-            //*(input_datum_types.add(ix)) = Box::into_raw(Box::new(fact.datum_type().unwrap_or(tract_core::prelude::DatumType::I64))) as *mut c_void;
-            if let Some(dt) = fact.datum_type() {
-                println!("HERE: Symbolic output {} dtype: {:?}", ix, dt);
-            } else {
-                println!("HERE: Symbolic output {} dtype: unknown", ix);
-            }
         }
 
-        //let model = Box::from_raw(*transformed_model).into_runnable()?;
         let model = typed.into_runnable()?;
         
         let output_vectors = model.run(model_inputs)?;
         for (i, output) in output_vectors.into_iter().enumerate() {
             let tensor = output.into_tensor();
-            println!("producer runtime output shape: {:?} and dt: {:?}", tensor.shape(), tensor.datum_type());
             *(input_datum_types.add(i)) = Box::into_raw(Box::new(tensor.datum_type())) as *mut c_void;
             *(outputs.add(i)) = Box::into_raw(Box::new(tensor)) as *mut c_void;
         }
@@ -993,50 +921,38 @@ pub unsafe extern "C" fn tract_generate_text_llm(
 ) -> TRACT_RESULT {
     // Define the result to be returned
     let result = (|| -> Result<(), anyhow::Error> {
-        #[cfg(not(feature = "use_sys_time"))]
-        {
-            print_memory("Before generating text");
-        }
-
         let model_inputs: SmallVec<[TValue; 4]> = unsafe {
             std::slice::from_raw_parts(inputs, num_inputs)
                 .iter()
                 .map(|&ptr| {
-                    let tensor_ptr = ptr as *mut Tensor;
-                    let owned_tensor = Box::from_raw(tensor_ptr);
-                    let cloned_tensor = owned_tensor.clone();
-                    let _ = Box::into_raw(owned_tensor);
-                    (*cloned_tensor).into()
+                    let tensor_ref = &*(ptr as *mut Tensor);
+                    TValue::from(tensor_ref.clone())
                 })
                 .collect()
         };
-        let first_tensor = model_inputs[0].clone();
 
         let model_outputs: SmallVec<[TValue; 4]> = unsafe {
             std::slice::from_raw_parts(outputs, num_outputs)
                 .iter()
                 .map(|&ptr| {
-                    let tensor_ptr = ptr as *mut Tensor;
-                    let owned_tensor = Box::from_raw(tensor_ptr);
-                    let cloned_tensor = owned_tensor.clone();
-                    let _ = Box::into_raw(owned_tensor);
-                    (*cloned_tensor).into()
+                    let tensor_ref = &*(ptr as *mut Tensor);
+                    TValue::from(tensor_ref.clone())
                 })
                 .collect()
         };
 
         let tokenizer = &*(tokenizer_ptr as *mut Tokenizer);
 
-        let first_vec_u32: Vec<u32> = if let Ok(array) = first_tensor.to_array_view::<i64>() {
+        let first_vec_u32: Vec<u32> = if let Ok(array) = model_inputs[0].to_array_view::<i64>() {
             array.iter().map(|x| *x as u32).collect()
-        } else if let Ok(array) = first_tensor.to_array_view::<f32>() {
+        } else if let Ok(array) = model_inputs[0].to_array_view::<f32>() {
             array.iter().map(|x| *x as u32).collect()
-        // } else if let Ok(array) = first_tensor.to_array_view::<TDim>() {
+        // } else if let Ok(array) = model_inputs[0].to_array_view::<TDim>() {
         //     array.iter().map(|x| x.to_i64().unwrap_or(0) as u32).collect()
         } else {
             return Err(anyhow::anyhow!(
                 "Unsupported tensor type: {:?}",
-                first_tensor.datum_type()
+                model_inputs[0].datum_type()
             ));
         };
 
@@ -1044,7 +960,6 @@ pub unsafe extern "C" fn tract_generate_text_llm(
         let last_logits;
         let generated_text = match tokenizer.token_to_id("[MASK]") {
             Some(mask_id) => {
-                println!("Here in mask!\n");
                 let mask_pos = first_vec_u32
                     .iter()
                     .position(|&x| x == mask_id)
@@ -1054,7 +969,6 @@ pub unsafe extern "C" fn tract_generate_text_llm(
                 tokenizer.id_to_token(word_id)
             }
             None => {
-                println!("not mask!\n");
                 last_logits = logits.slice(s![0, -1, ..]);
                 
                 // Top-k sampling
@@ -1093,11 +1007,6 @@ pub unsafe extern "C" fn tract_generate_text_llm(
         let c_word = CString::new(formatted_string)?;
         *inference = c_word.into_raw(); // Pass the result back
 
-        #[cfg(not(feature = "use_sys_time"))]
-        {
-            print_memory("After generating text");
-        }
-
         Ok(())
     })();
 
@@ -1106,71 +1015,60 @@ pub unsafe extern "C" fn tract_generate_text_llm(
 
 #[no_mangle]
 pub unsafe extern "C" fn tract_update_input_values_llm(
-    inputs: *mut *mut c_void,
+    input_values: *mut *mut c_void,
     num_inputs: usize,
     next_token_id: usize,
 ) -> TRACT_RESULT {
     // Define the result to be returned
     let result = (|| -> Result<(), anyhow::Error> {
-        #[cfg(not(feature = "use_sys_time"))]
-        {
-            print_memory("Before updating input values");
-        }
+        tract_free_llm_inputs(input_values, num_inputs);
 
-        // Update the vectors with new token
-        let old_input_vecs: SmallVec<[TValue; 4]> = unsafe {
-            std::slice::from_raw_parts(inputs, num_inputs)
-                .iter()
-                .map(|&ptr| {
-                    let tensor_ptr = ptr as *mut Tensor;
-                    let owned_tensor = Box::from_raw(tensor_ptr);
-                    let cloned_tensor = owned_tensor.clone();
-                    let _ = Box::into_raw(owned_tensor);
-                    (*cloned_tensor).into()
-                })
-                .collect()
-        };
+        let state = STATE.as_mut().unwrap();
+        state.ids.push(next_token_id as u32);
+        state.attention_mask.push(1);
 
-        let mut input_arrays: Vec<Vec<i64>> = old_input_vecs.iter()
-            .map(|tval| {
-                tval.to_array_view::<i64>()
-                    .map(|arr| arr.iter().cloned().collect::<Vec<i64>>())
-            })
-            .collect::<Result<_, _>>()?;
-
-        for (i, vec) in input_arrays.iter_mut().enumerate() {
-            match i {
-                0 => vec.push(next_token_id as i64),         // input_ids
-                1 => vec.push(1),                            // attention_mask
-                2 => {                                       // position_ids
-                    let last = *vec.last().unwrap();
-                    vec.push(last + 1);
-                }
-                _ => {}
+        if num_inputs == 3 {
+            if let Some(&last) = state.third_vec.last() {
+                state.third_vec.push(last + 1);
+            } else {
+                state.third_vec.push(0);
             }
         }
 
-        let new_tensors : Vec<Tensor> = input_arrays
-            .into_iter()
-            .map(|vec| {
-                let len = vec.len();
-                let array = Array2::from_shape_vec(
-                    (1, len),
-                    vec.iter().map(|&x| x as i64).collect(),
-                ).unwrap();
-                array.into()
-        }).collect();
+        let input_ids_tensor: Tensor = Array2::from_shape_vec(
+            (1, state.ids.len()),
+            state.ids.iter().map(|&x| x as i64).collect(),
+        )?.into();
 
-        // Overwrite the inputs with the new tensors
-        tract_free_llm_inputs(inputs, num_inputs);
-        for (i, tensor) in new_tensors.into_iter().enumerate() {
-            *(inputs.add(i)) = Box::into_raw(Box::new(tensor)) as *mut c_void;
+        let attention_mask_tensor: Tensor = Array2::from_shape_vec(
+            (1, state.attention_mask.len()),
+            state.attention_mask.iter().map(|&x| x as i64).collect(),
+        )?.into();
+
+        if num_inputs < 1 || num_inputs > 3 {
+            return Err(anyhow::anyhow!("The input is not corrrect for an llm!"));
         }
 
-        #[cfg(not(feature = "use_sys_time"))]
-        {
-            print_memory("After updating input values");
-        }
+        match num_inputs {
+            1 => {
+                *(input_values.add(0)) = Box::into_raw(Box::new(input_ids_tensor)) as *mut c_void;
+            },
+            2 => {
+                *(input_values.add(0)) = Box::into_raw(Box::new(input_ids_tensor)) as *mut c_void;
+                *(input_values.add(1)) = Box::into_raw(Box::new(attention_mask_tensor)) as *mut c_void;
+            },
+            _ => {
+                *(input_values.add(0)) = Box::into_raw(Box::new(input_ids_tensor)) as *mut c_void;
+                *(input_values.add(1)) = Box::into_raw(Box::new(attention_mask_tensor)) as *mut c_void;
+                
+                let third_tensor: Tensor = Array2::from_shape_vec(
+                    (1, state.third_vec.len()),
+                    state.third_vec.iter().map(|&x| x as i64).collect(),
+                )?.into();
+
+                *(input_values.add(2)) = Box::into_raw(Box::new(third_tensor)) as *mut c_void;
+            }
+        };
 
         Ok(())
     })();
@@ -1622,7 +1520,6 @@ pub unsafe extern "C" fn tract_onnx_destroy(onnx: *mut *mut TractOnnx) -> TRACT_
 /// Parse and load an ONNX model as a tract InferenceModel.
 /// println!("cargo:rerun-if-changed=tract.h");
 /// `path` is a null-terminated utf-8 string pointer. It must point to a `.onnx` model file.
-use std::sync::Arc;
 #[no_mangle]
 pub unsafe extern "C" fn tract_onnx_model_for_path_cnn(
     onnx: *const TractOnnx,
