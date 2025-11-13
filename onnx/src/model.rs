@@ -233,21 +233,14 @@ impl Default for Onnx {
     }
 }
 
-use std::sync::OnceLock;
+use once_cell::sync::Lazy;
 use tract_core::internal::SymbolTable;
 
-static GLOBAL_SYMBOL_TABLE: OnceLock<Arc<SymbolTable>> = OnceLock::new();
-
-fn get_global_symbol_table() -> Arc<SymbolTable> {
-    GLOBAL_SYMBOL_TABLE
-        .get_or_init(|| Arc::new(SymbolTable::default()))
-        .clone()
-}
+static GLOBAL_SYMBOL_TABLE: Lazy<SymbolTable> = Lazy::new(SymbolTable::default);
 
 impl Onnx {
     pub fn parse(&self, proto: &pb::ModelProto, path: Option<&str>, weights_data: Option<&[u8]>) -> TractResult<ParseResult> {
-        let symbol_table = get_global_symbol_table();
-        self.parse_with_symbols(proto, path, &symbol_table, weights_data)
+        self.parse_with_symbols(proto, path, &GLOBAL_SYMBOL_TABLE, weights_data)
     }
     pub fn parse_with_symbols(
         &self,
