@@ -696,6 +696,7 @@ pub unsafe extern "C" fn tract_llm_inference_model_release(
     handle_error(result)
 }
 
+use tract_hir::infer::Factoid;
 pub type TractLlmTransformedModel = Graph<TypedFact, Box<dyn TypedOp>>;
 #[no_mangle]
 pub unsafe extern "C" fn tract_inference_model_into_optimized_llm(
@@ -748,11 +749,36 @@ pub unsafe extern "C" fn tract_inference_model_into_optimized_llm(
         };
 
         let mut model_builder = model_ref.clone();
+        let state = STATE.as_ref().ok_or_else(|| anyhow::anyhow!("STATE not initialized"))?;
+        let seq_len = state.ids.len() as i64;
+        let batch = 1i64;
+        let mut solver = tract_core::prelude::SymbolValues::default();
+        for sym_name in ["batch_size", "batch", "sequence_length", "sequence", "seq_len", "seq_length"] {
+            let sym = model_builder.symbol_table.sym(sym_name);
+            let val = if sym_name.contains("batch") { batch } else { seq_len };
+            solver = solver.with(&sym, val);
+        }
+
+        // reset all node facts
+        for node_id in 0..model_builder.nodes().len() {
+            let node = model_builder.node(node_id);
+            for i in 0..node.outputs.len() {
+                model_builder.set_outlet_fact(
+                    tract_core::internal::OutletId::new(node_id, i),
+                    InferenceFact::default(),
+                )?;
+            }
+        }
+
         for (i, shapefact_opt) in shapefacts.iter().enumerate() {
             match shapefact_opt {
                 Some(shapefact_vec) => {
                     let shapefact = &shapefact_vec[0];
-                    let dims: TVec<TDim> = shapefact.to_tvec();
+                    let dims: TVec<TDim> = shapefact
+                        .to_tvec()
+                        .iter()
+                        .map(|d| d.eval(&solver))
+                        .collect();
                     if datum_types[i] == TDim::datum_type() {
                         datum_types[i] = i64::datum_type();
                     }
@@ -761,14 +787,25 @@ pub unsafe extern "C" fn tract_inference_model_into_optimized_llm(
                 },
                 None => {
                     if let Ok(orig_fact) = model_ref.input_fact(i) {
-                        model_builder = model_builder.with_input_fact(i, InferenceFact::dt_shape(datum_types[i], orig_fact.shape.clone()))?;
+                        if let Some(concrete_dims) = orig_fact.shape.concretize() {
+                            let resolved_shape: TVec<TDim> = concrete_dims
+                                .iter()
+                                .map(|d| d.eval(&solver))
+                                .collect();
+                            model_builder = model_builder.with_input_fact(
+                                i,
+                                InferenceFact::dt_shape(datum_types[i], resolved_shape),
+                            )?;
+                        } else {
+                            model_builder = model_builder.with_input_fact(i,InferenceFact::dt_shape(datum_types[i], orig_fact.shape.clone()))?;
+                        }
                     }
                 }
             }
         }
 
         let m = model_builder.into_optimized().map_err(|e| {
-            eprintln!("Failed to convert to typed model: {}", e);
+            eprintln!("Failed to convert to optimized model: {}", e);
             e
         })?;
 
