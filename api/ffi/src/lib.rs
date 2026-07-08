@@ -984,7 +984,7 @@ pub unsafe extern "C" fn tract_inference_model_into_optimized_and_run_llm(
         }
 
         let optimized = model_builder.into_optimized().map_err(|e| {
-            eprintln!("Failed to convert to typed model: {}", e);
+            eprintln!("Failed to convert to optimized model: {}", e);
             e
         })?;
         
@@ -1085,23 +1085,74 @@ pub unsafe extern "C" fn tract_model_for_path_into_optimized_and_run_llm(
         };
 
         let mut model_builder = inference_model;
+        // capture ALL original input facts FIRST, before anything is reset
+let original_input_facts: Vec<Option<tract_hir::infer::ShapeFactoid>> = (0..num_inputs)
+    .map(|i| model_builder.input_fact(i).ok().map(|f| f.shape.clone()))
+    .collect();
+
+        let state = STATE.as_ref().ok_or_else(|| anyhow::anyhow!("STATE not initialized"))?;
+        let seq_len = state.ids.len() as i64;
+        let batch = 1i64;
+        let mut solver = tract_core::prelude::SymbolValues::default();
+        for sym_name in ["batch_size", "batch", "sequence_length", "sequence", "seq_len", "seq_length"] {
+            let sym = model_builder.symbol_table.sym(sym_name);
+            let val = if sym_name.contains("batch") { batch } else { seq_len };
+            solver = solver.with(&sym, val);
+        }
+
+        // reset all node facts
+        for node_id in 0..model_builder.nodes().len() {
+            let node = model_builder.node(node_id);
+            for i in 0..node.outputs.len() {
+                model_builder.set_outlet_fact(
+                    tract_core::internal::OutletId::new(node_id, i),
+                    InferenceFact::default(),
+                )?;
+            }
+        }
+
         for (i, shapefact_opt) in shapefacts.iter().enumerate() {
             match shapefact_opt {
                 Some(shapefact_vec) => {
                     let shapefact = &shapefact_vec[0];
-                    let dims: TVec<TDim> = shapefact.to_tvec();
+                    let dims: TVec<TDim> = shapefact
+                        .to_tvec()
+                        .iter()
+                        .map(|d| d.eval(&solver))
+                        .collect();
                     if datum_types[i] == TDim::datum_type() {
                         datum_types[i] = i64::datum_type();
                     }
                     let input_fact = InferenceFact::dt_shape(datum_types[i], dims);
                     model_builder = model_builder.with_input_fact(i, input_fact)?;
                 },
-                None => {}
+                None => {
+                    if let Some(shape) = &original_input_facts[i] {
+                        match shape.concretize() {
+                            Some(concrete_dims) => {
+                                let resolved_shape: TVec<TDim> = concrete_dims
+                                    .iter()
+                                    .map(|d| d.eval(&solver))
+                                    .collect();
+                                model_builder = model_builder.with_input_fact(
+                                    i,
+                                    InferenceFact::dt_shape(datum_types[i], resolved_shape),
+                                )?;
+                            }
+                            None => {
+                                model_builder = model_builder.with_input_fact(
+                                    i,
+                                    InferenceFact::dt_shape(datum_types[i], shape.clone()),
+                                )?;
+                            }
+                        }
+                    }
+                }
             }
         }
 
         let optimized = model_builder.into_optimized().map_err(|e| {
-            eprintln!("Failed to convert to typed model: {}", e);
+            eprintln!("Failed to convert to optimized model: {}", e);
             e
         })?;
         
