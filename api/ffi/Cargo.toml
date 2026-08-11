@@ -19,7 +19,10 @@ crate-type = ["staticlib"]
 maintenance = { status = "actively-developed" }
 
 [dependencies]
-lazy_static = "1.4"
+redact-core = "0.9.1"
+redact-ner = "0.9.1"
+base64 = "0.22"
+once_cell = "1.19"
 jemallocator = "0.3"
 jemalloc-ctl = "0.3"
 rand = "0.8"

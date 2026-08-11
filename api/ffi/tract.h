@@ -189,6 +189,8 @@ enum TRACT_RESULT tract_free_tokenizer(void **tokenizer_ptr);
 
 enum TRACT_RESULT tract_value_from_bytes_llm(void *tokenizer_ptr,
                                              const char *prompt,
+                                             const char *ner_model_path,
+                                             const char *ner_tokenizer_path,
                                              void **input_values,
                                              void **input_datum_types,
                                              uintptr_t num_inputs);
