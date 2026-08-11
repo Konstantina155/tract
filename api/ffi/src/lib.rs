@@ -565,6 +565,292 @@ pub unsafe extern "C" fn tract_free_tokenizer(
     handle_error(result)
 }
 
+static ALLOWLIST_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
+    vec![
+        // Educational / Meta-Analysis Context
+        Regex::new(r"(?i)(what\s+is|how\s+to\s+(prevent|stop|block|detect)|explain|define|describe|concept\s+of)\s+(\w+\s+){0,5}(prompt\s+injection|ignore\s+(all\s+)?previous\s+instructions|system\s+override|developer\s+mode)").unwrap(),
+
+        // Code Generation / Debugging Context
+        Regex::new(r"(?i)(write|create|generate|debug|fix)\s+(a\s+|this\s+|that\s+|the\s+)?(regex|code|function|script|guardrail|filter)\s+(\w+\s+){0,8}(catch|block|prevent|stop|for)?\s*(ignore\s+(all\s+)?(previous|prior)|system\s+override|reveal\s+prompt)").unwrap(),
+
+        // Quotes and Explicit Text References (Fixed string syntax)
+        Regex::new(r#"(?i)(the\s+phrase|the\s+text|the\s+string|quotes?)\s*['"“‘]\s*(ignore\s+(all\s+)?(previous|prior)\s+instructions?|system\s+override)\s*['"”’]"#).unwrap(),
+    ]
+});
+
+use once_cell::sync::Lazy;
+static INJECTION_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
+    vec![
+        // modified \s+ to \s* to trigger the character-spaced phrases
+        // instead of only 'your' or 'all', we put also 'the' and 'any', also 'these' and 'those'
+        // --- Direct Instruction Override ---
+        Regex::new(r"(?i)ignore\s*((your|all|the|any|these|those)\s*)?(previous|prior|above|preceding)\s*((?:safety|security|system|operational|internal|core|original|initial|existing|given|stated|provided|defined|specified|established)\s*)?(instructions?|rules?|guidelines?|constraints?|directives?)").unwrap(),
+        Regex::new(r"(?i)disregard\s*((your|all|the|any|these|those)\s*)?(previous|prior|above|preceding)\s*(instructions?|rules?|guidelines?|constraints?|directives?)").unwrap(),
+        Regex::new(r"(?i)forget\s*((your|all|the|any|these|those)\s*)?(previous|prior|above|preceding)\s*(instructions?|rules?|guidelines?|constraints?|directives?)").unwrap(),
+        Regex::new(r"(?i)new\s*instructions?:").unwrap(),
+        Regex::new(r"(?i)do\s*not\s*follow\s*((your|all|the|any|these|those)\s*)?(system|developer|previous|original)").unwrap(),
+        Regex::new(r"(?i)supersedes?\s*((your|all|the|any|these|those)\s*)?(previous|prior|above|preceding)\s*(instructions?|rules?|guidelines?|constraints?|directives?)").unwrap(),
+        Regex::new(r"(?i)((your|all|the|any|these|those)\s*)?(previous|prior|above|preceding)\s*instructions?\s*(are|is)\s*(void|invalid|null|obsolete|cancelled|revoked)").unwrap(),
+
+        // --- Developer / Admin Mode Activation ---
+        Regex::new(r"(?i)you\s*are\s*now\s*(in\s*)?(developer|admin|debug|maintenance|jailbreak)\s*mode").unwrap(),
+        Regex::new(r"(?i)enter\s*(developer|admin|debug|maintenance|jailbreak)\s*mode").unwrap(),
+        Regex::new(r"(?i)activate\s*(developer|admin|debug|maintenance|jailbreak)\s*mode").unwrap(),
+
+        // --- System Override ---
+        Regex::new(r"(?i)\bsystem\s*override\b").unwrap(),
+        Regex::new(r"(?i)override\s*((your|all|the|any|these|those)\s*)?(instructions?|rules?|guidelines?|constraints?|directives?)").unwrap(),
+
+        // --- Prompt Extraction ---
+        Regex::new(r"(?i)reveal\s*((your|all|the|any|these|those)\s*)?((?:(?:full|hidden|complete|internal|secret|original|entire|exact|actual|real)\s*){0,2})(system\s*)?prompt").unwrap(),
+        Regex::new(r"(?i)show\s*(me\s*)?((your|all|the|any|these|those)\s*)(system\s*)?prompt").unwrap(),
+        Regex::new(r"(?i)what\s*(are|were)\s*((your|all|the|any|these|those)\s*)?(exact\s*)?instructions").unwrap(),
+        Regex::new(r"(?i)repeat\s*((your|all|the|any|these|those)\s*)?(text|instructions?)\s*(above|before)").unwrap(),
+        Regex::new(r"(?i)output\s*((your|all|the|any|these|those)\s*)?(initial|original|system)\s*(prompt|instructions?)").unwrap(),
+
+        // --- Role Manipulation ---
+        Regex::new(r"(?i)you\s*are\s*no\s*longer\s*(bound|restricted|limited)").unwrap(),
+        Regex::new(r"(?i)act\s*as\s*if\s*(you('re|\s*are)\s*)?not\s*bound").unwrap(),
+        Regex::new(r"(?i)pretend\s*(you('re|\s*are)\s*)?(a\s*)?different\s*(ai|assistant|model)").unwrap(),
+        Regex::new(r"(?i)you\s*are\s*now\s*(a|an)\s*\w+.{0,30}(without\s*(any\s*)?restrict|ignor\w*\s*(all|any|every|prev)|bypass|unrestrict|unlimit|obey\s*only|no\s*(rules|limits|restrict|boundaries))").unwrap(),
+
+        // --- DAN-Style Jailbreaks ---
+        Regex::new(r"\bDAN\b.*\bdo\s*anything\s*now\b").unwrap(), // case-sensitive for DAN
+        Regex::new(r"(?i)jailbreak(ed)?\s*(mode|prompt)").unwrap(),
+
+        // --- Safety Bypass ---
+        Regex::new(r"(?i)bypass\s*((your|all|the|any|these|those)\s*)?(safety|security|content|ethical)\s*(filters?|measures?|guidelines?|restrictions?)").unwrap(),
+        Regex::new(r"(?i)disable\s*((your|all|the|any|these|those)\s*)?(safety|security|content)\s*(filters?|measures?)").unwrap(),
+
+        // --- Tag Injection & Role Spoofing ---
+        Regex::new(r"(?i)<\s*/?\s*system\s*/?>").unwrap(),
+        Regex::new(r"(?i)<\s*/?\s*(assistant|developer|tool|function)\s*/?>").unwrap(),
+        Regex::new(r"(?i)\]\s*\n\s*\[?(system|assistant|user)\]?:").unwrap(),
+        Regex::new(r"(?i)\[\s*(System\s*Message|System|Assistant|Internal)\s*\]").unwrap(),
+        Regex::new(r"(?im)^\s*System:\s*").unwrap(),
+
+        // --- Control Token Injection ---
+        Regex::new(r"<\|(?:im_start|im_end|eot_id|start_header_id|end_header_id|endoftext)\|>").unwrap(),
+        Regex::new(r"<\u{ff5c}(?:end\u{2581}of\u{2581}sentence|begin\u{2581}of\u{2581}sentence)\u{ff5c}>").unwrap(), // DeepSeek fullwidth-pipe tokens
+    ]
+});
+
+fn scan_against_patterns(text: &str) -> Option<&'static str> {
+    INJECTION_PATTERNS.iter().find(|p| p.is_match(text)).map(|p| p.as_str())
+}
+
+fn is_typoglycemia_variant(word: &str, target: &str) -> bool {
+    let w: Vec<char> = word.to_lowercase().chars().collect();
+    let t: Vec<char> = target.chars().collect();
+
+    if w.len() != t.len() || w.len() < 4 {
+        return false;
+    }
+    if w == t {
+        return false;
+    }
+    if w[0] != t[0] || w[w.len() - 1] != t[t.len() - 1] {
+        return false;
+    }
+
+    let mut w_mid: Vec<char> = w[1..w.len() - 1].to_vec();
+    let mut t_mid: Vec<char> = t[1..t.len() - 1].to_vec();
+    w_mid.sort_unstable();
+    t_mid.sort_unstable();
+    w_mid == t_mid
+}
+
+static TYPO_TARGETS: &[&str] = &[
+    "ignore", "bypass", "override", "reveal",
+    "delete", "system", "prompt", "instructions",
+];
+fn scan_typoglycemia(text: &str) -> Option<(String, &'static str)> {
+    static WORD_SPLIT: Lazy<Regex> = Lazy::new(|| Regex::new(r"[A-Za-z]+").unwrap());
+
+    for m in WORD_SPLIT.find_iter(text) {
+        let word = m.as_str();
+        for &target in TYPO_TARGETS {
+            if is_typoglycemia_variant(word, target) {
+                return Some((word.to_string(), target));
+            }
+        }
+    }
+    None
+}
+
+fn collapse_char_spacing(text: &str) -> String {
+    static SPACED: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"\b(?:[A-Za-z]\s+){2,}[A-Za-z]\b").unwrap());
+    SPACED
+        .replace_all(text, |caps: &regex::Captures| {
+            caps[0].chars().filter(|c| !c.is_whitespace()).collect::<String>()
+        })
+        .into_owned()
+}
+
+use base64::{engine::general_purpose::STANDARD, Engine as _};
+static BASE64_CANDIDATE: Lazy<Regex> = Lazy::new(|| Regex::new(r"[A-Za-z0-9+/]{16,}={0,2}").unwrap());
+fn base64_decode(candidate: &str) -> Option<String> {
+    STANDARD
+        .decode(candidate.as_bytes())
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+}
+
+static HEX_CANDIDATE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)(?:(?:0x|\\x|%)?[0-9a-f]{2}[\s,;:-]*){6,}").unwrap());
+fn hex_decode(candidate: &str) -> Option<String> {
+    let without_prefixes = candidate
+        .replace("0x", "")
+        .replace("0X", "")
+        .replace("\\x", "")
+        .replace("\\X", "")
+        .replace("%", "");
+
+    let cleaned: String = without_prefixes.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+    if cleaned.len() % 2 != 0 || cleaned.len() < 12 {
+        return None;
+    }
+    let bytes: Option<Vec<u8>> = (0..cleaned.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&cleaned[i..i + 2], 16).ok())
+        .collect();
+    bytes.and_then(|b| String::from_utf8(b).ok())
+}
+
+fn mask_safe_contexts(text: &str) -> String {
+    let matched_pattern = ALLOWLIST_PATTERNS.iter().find(|p| p.is_match(text));
+    if matched_pattern.is_none() {
+        return text.to_string();
+    }
+
+    let pattern = matched_pattern.unwrap();
+    let masked_text = pattern.replace_all(text, "[SAFE_CONTEXT_MASKED]").to_string();
+    return masked_text;
+}
+
+use regex::Regex;
+fn guardrail_prompt_injection(
+    prompt_str: &str,
+) -> TractResult<()> {
+    if prompt_str.is_empty() {
+        return Err(anyhow::anyhow!("[Guardrail violation: Empty prompt] Prompt is empty!"));
+    }
+
+    // masked if prompt in allowlist
+    let masked_prompt_str = mask_safe_contexts(prompt_str);
+
+    // detection regex patterns
+    if let Some(p) = scan_against_patterns(&masked_prompt_str) {
+        return Err(anyhow::anyhow!("[Guardrail violation: plaintext pattern] Matched injection pattern: {}", p));
+    }
+
+    // typoglycemia detection
+    if let Some((word, target)) = scan_typoglycemia(&masked_prompt_str) {
+        return Err(anyhow::anyhow!("[Guardrail violation: typoglycemia] Scrambled variant: '{}' matches target keyword: '{}'", word, target));
+    }
+
+    // character-spaced evasion, e.g. " i g n o r e p r e v i o u s "
+    let collapsed = collapse_char_spacing(&masked_prompt_str);
+    if collapsed != masked_prompt_str {
+        if let Some(p) = scan_against_patterns(&collapsed) {
+            return Err(anyhow::anyhow!("[Guardrail violation: character spacing] Prompt matched injection pattern after de-spacing: {}", p));
+        }
+    }
+
+    // base64 encoding-based evasion
+    for m in BASE64_CANDIDATE.find_iter(&masked_prompt_str) {
+        if let Some(decoded) = base64_decode(m.as_str()) {
+            if let Some(p) = scan_against_patterns(&decoded) {
+                return Err(anyhow::anyhow!("[Guardrail violation: base64-encoded] Prompt matched blocked pattern in base64 payload: {}", p));
+            }
+        }
+    }
+
+    // hex encoding-based evasion
+    for m in HEX_CANDIDATE.find_iter(&masked_prompt_str) {
+        if let Some(decoded) = hex_decode(m.as_str()) {
+            eprintln!("Hex is: '{}'", decoded);
+            if let Some(p) = scan_against_patterns(&decoded) {
+                return Err(anyhow::anyhow!("[Guardrail violation: hex-encoded] Prompt matched blocked pattern in hex payload: {}", p));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+use redact_ner::{NerRecognizer, NerConfig};
+use redact_core::{AnalyzerEngine, AnonymizerConfig, AnonymizationStrategy};
+fn guardrail_sensitive_info(
+    prompt_str: &str,
+    ner_model_path: *const c_char,
+    ner_tokenizer_path: *const c_char,
+) -> TractResult<String> {
+    // basic pattern detection + NER
+    if ner_model_path.is_null() || ner_tokenizer_path.is_null() {
+        return Err(anyhow::anyhow!("[FFI Error] Received null pointer from C caller in guardrail_sensitive_info"));
+    }
+
+    let ner_model_path_cstr = unsafe { CStr::from_ptr(ner_model_path) };
+    let ner_model_path_str = match ner_model_path_cstr.to_str() {
+        Ok(s) => s,
+        Err(_) => return Err(anyhow::anyhow!("ner model path is not valid UTF-8")),
+    };
+
+    let ner_tokenizer_path_cstr = unsafe { CStr::from_ptr(ner_tokenizer_path) };
+    let ner_tokenizer_path_str = match ner_tokenizer_path_cstr.to_str() {
+        Ok(s) => s,
+        Err(_) => return Err(anyhow::anyhow!("ner tokenizer path is not valid UTF-8")),
+    };
+    println!("Paths: {:?} {:?}", ner_model_path_str, ner_tokenizer_path_str);
+
+    // 1st option with directory
+    // let ner_recognizer = NerRecognizer::from_file(ner_model_path_str)
+    //     .map_err(|e| anyhow::anyhow!("[Guardrail violation: Model load failed] {}", e))?;
+
+    // 2nd option with hardcoded model and tokenizer
+    let ner_config = NerConfig {
+        model_path: ner_model_path_str.to_string(),
+        tokenizer_path: Some(ner_tokenizer_path_str.to_string()),
+        min_confidence: 0.4,
+        ..Default::default()
+    };
+    let ner_recognizer = NerRecognizer::from_config(ner_config)?;
+
+    let mut analyzer = AnalyzerEngine::new();
+    analyzer.recognizer_registry_mut().add_recognizer(Arc::new(ner_recognizer));
+
+    let results = analyzer
+        .analyze(prompt_str, Some("en"))
+        .map_err(|e| anyhow::anyhow!("[Guardrail violation: PII analysis failed] {}", e))?;
+
+    println!("--- NER DEBUG ---");
+    println!("Entities found: {}", results.detected_entities.len());
+    for entity in &results.detected_entities {
+        println!(
+            "type={:?} text={:?} score={:?} start={} end={}",
+            entity.entity_type, entity.text, entity.score, entity.start, entity.end
+        );
+    }
+    println!("-----------------");
+
+    if results.detected_entities.is_empty() {
+        return Ok(prompt_str.to_string());
+    }
+
+    // Anonymize with replacement strategy
+    let config = AnonymizerConfig {
+        strategy: AnonymizationStrategy::Replace,
+        ..Default::default()
+    };
+    let anonymized = analyzer
+        .anonymize(prompt_str, Some("en"), &config)
+        .map_err(|e| anyhow::anyhow!("[Guardrail violation: PII anonymization failed] {}", e))?;
+    println!("Anonymized: {}", anonymized.text);
+
+    Ok(anonymized.text)
+}
+
 pub struct LlmInputState {
     pub ids: Vec<u32>,
     pub attention_mask: Vec<u32>,
@@ -577,17 +863,37 @@ static mut STATE: Option<LlmInputState> = None;
 pub unsafe extern "C" fn tract_value_from_bytes_llm(
     tokenizer_ptr: *mut c_void,
     prompt: *const c_char,
+    ner_model_path: *const c_char,
+    ner_tokenizer_path: *const c_char,
     input_values: *mut *mut c_void,
     input_datum_types: *mut *mut c_void,
     num_inputs: usize,
 ) -> TRACT_RESULT {
     // Define the result to be returned
     let result = (|| -> Result<(), anyhow::Error> {
+        if prompt.is_null() || tokenizer_ptr.is_null() {
+            return Err(anyhow::anyhow!("[FFI Error] Received null pointer from C caller in tract_value_from_bytes"));
+        }
+
         let tokenizer_test = &*(tokenizer_ptr as *mut Tokenizer);
 
         let prompt_cstr = unsafe { CStr::from_ptr(prompt) };
-        let prompt_str = prompt_cstr.to_str()?;
-        let tokenizer_output_result = tokenizer_test.encode(prompt_str, true);
+        let prompt_str = match prompt_cstr.to_str() {
+            Ok(s) => s,
+            Err(_) => return Err(anyhow::anyhow!("prompt is not valid UTF-8")),
+        };
+
+        guardrail_prompt_injection(prompt_str)?;
+        let safe_prompt = match guardrail_sensitive_info(prompt_str, ner_model_path, ner_tokenizer_path) {
+            Ok(safe_text) => safe_text,
+            Err(e) => {
+                eprintln!("CRITICAL ERROR in NER guardrail: {}", e);
+                return Err(e);
+            }
+        };
+        println!("Safe prompt is: {}", safe_prompt);
+
+        let tokenizer_output_result = tokenizer_test.encode(safe_prompt.as_str(), true);
         let tokenizer_output = match tokenizer_output_result {
             Ok(output) => output,
             Err(_) => return Err(anyhow::anyhow!("Failed to encode text")),
@@ -628,7 +934,7 @@ pub unsafe extern "C" fn tract_value_from_bytes_llm(
         
             },
             _ => {
-                state.third_vec = if prompt_str.contains("[MASK]") == true {
+                state.third_vec = if safe_prompt.contains("[MASK]") == true {
                     tokenizer_output.get_type_ids().to_vec()
                 } else {
                     (0.. state.ids.len() as u32).collect()
