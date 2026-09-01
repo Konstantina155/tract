@@ -20,7 +20,6 @@ maintenance = { status = "actively-developed" }
 
 [dependencies]
 redact-core = "0.9.1"
-redact-ner = "0.9.1"
 base64 = "0.22"
 once_cell = "1.19"
 jemallocator = "0.5"
@@ -47,3 +46,5 @@ tract-hir = { path = "../../hir", version = "=0.21.4-pre" }
 
 [features]
 use_sys_time = ["tract-core/use_sys_time"]
+use_pii_regex = ["tract-core/use_pii_regex"]
+use_pii_guardrail = ["tract-core/use_pii_guardrail"]

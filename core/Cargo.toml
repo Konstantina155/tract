@@ -46,6 +46,8 @@ blis = [ "blas", "blis-src" ]
 openblas = [ "blas", "openblas-src" ]
 paranoid_assertions = []
 use_sys_time = []
+use_pii_regex = []
+use_pii_guardrail = []
  
 [dev-dependencies]
 env_logger.workspace = true

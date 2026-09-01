@@ -245,12 +245,12 @@ pub struct EncryptionParameters {
     pub tag: *const u8
 }
 impl tract_core::prelude::Framework<ProtoModel, TypedModel> for Nnef {
-    fn model_for_path(&self, p: impl AsRef<Path>, _params: Option<*const tract_core::framework::EncryptionParameters>, _weights_decrypted: Option<&[u8]>) -> TractResult<TypedModel> {
-        let proto = self.proto_model_for_path(p, None)?;
+    fn model_for_path(&self, p: impl AsRef<Path>, _params: Option<*const tract_core::framework::EncryptionParameters>, _weights_decrypted: Option<&[u8]>, _ner_model_bytes: Option<&[u8]>) -> TractResult<TypedModel> {
+        let proto = self.proto_model_for_path(p, None, None)?;
         self.model_for_proto_model(&proto)
     }
 
-    fn proto_model_for_path(&self, path: impl AsRef<Path>, _params: Option<*const tract_core::framework::EncryptionParameters>) -> TractResult<ProtoModel> {
+    fn proto_model_for_path(&self, path: impl AsRef<Path>, _params: Option<*const tract_core::framework::EncryptionParameters>, _ner_model_bytes: Option<&[u8]>) -> TractResult<ProtoModel> {
         let path = path.as_ref();
         if path.is_file() {
             let mut f = std::fs::File::open(path)?;

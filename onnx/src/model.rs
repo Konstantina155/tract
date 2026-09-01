@@ -319,7 +319,7 @@ pub fn decrypt(key: &[u8], iv: &[u8], cipher_text: &mut [u8], additional_data: &
 }
 
 impl Framework<pb::ModelProto, InferenceModel> for Onnx {
-    fn model_for_path(&self, p: impl AsRef<path::Path>, params: Option<*const tract_core::framework::EncryptionParameters>, weights_decrypted: Option<&[u8]>) -> TractResult<InferenceModel> {
+    fn model_for_path(&self, p: impl AsRef<path::Path>, params: Option<*const tract_core::framework::EncryptionParameters>, weights_decrypted: Option<&[u8]>, ner_model_bytes: Option<&[u8]>) -> TractResult<InferenceModel> {
         // Inside the model_for_path function in wasm
         let mut path = PathBuf::new();
         path.push(&p);
@@ -328,15 +328,14 @@ impl Framework<pb::ModelProto, InferenceModel> for Onnx {
             dir = dir_opt.to_str();
         }
 
-        let params = match params {
-            Some(params) => unsafe { &*params },
-            None => tract_nnef::internal::bail!("Encryption params is null!")
-        };
-        if params.key.is_null() || params.iv.is_null() || params.aad.is_null() || params.tag.is_null() {
-            bail!("Encryption parameters are null!");
+        if let Some(p) = params {
+            let p_ref = unsafe { &*p };
+            if p_ref.key.is_null() || p_ref.iv.is_null() || p_ref.aad.is_null() || p_ref.tag.is_null() {
+                bail!("Encryption params is null!");
+            }
         }
 
-        let proto = self.proto_model_for_path(p, Some(params))?;
+        let proto = self.proto_model_for_path(p, params, ner_model_bytes)?;
         // The graph is created in below function
         let ParseResult { model, unresolved_inputs, .. } = self.parse(&proto, dir, weights_decrypted)?;
         if unresolved_inputs.len() > 0 {
@@ -346,54 +345,46 @@ impl Framework<pb::ModelProto, InferenceModel> for Onnx {
     }
 
     #[cfg(target_family = "wasm")]
-    fn proto_model_for_path(&self, p: impl AsRef<path::Path>, _params: Option<*const tract_core::framework::EncryptionParameters>) -> TractResult<pb::ModelProto> {
+    fn proto_model_for_path(&self, p: impl AsRef<path::Path>, _params: Option<*const tract_core::framework::EncryptionParameters>, _ner_model_bytes: Option<&[u8]>) -> TractResult<pb::ModelProto> {
         let p = p.as_ref();
         let mut file = fs::File::open(p).with_context(|| format!("Opening {p:?}"))?;
         Ok(self.proto_model_for_read(&mut file)?)
     }
 
     #[cfg(not(target_family = "wasm"))]
-    fn proto_model_for_path(&self, p: impl AsRef<path::Path>, params: Option<*const tract_core::framework::EncryptionParameters>) -> TractResult<pb::ModelProto> {
+    fn proto_model_for_path(&self, p: impl AsRef<path::Path>, params: Option<*const tract_core::framework::EncryptionParameters>, ner_model_bytes: Option<&[u8]>) -> TractResult<pb::ModelProto> {
         // Inside the proto_model_for_path function in wasm
-        let params = match params {
-            Some(params) => unsafe { &*params },
-            None => tract_nnef::internal::bail!("Encryption params is null!")
-        };
-        if params.key.is_null() || params.iv.is_null() || params.aad.is_null() || params.tag.is_null() {
-            bail!("Encryption parameters are null!");
-        }
+        let mut model_data: Vec<u8> = if let Some(ner_model_data) = ner_model_bytes {
+            ner_model_data.to_vec()
+        } else {
+            let p = p.as_ref();
 
-        let key = unsafe { slice::from_raw_parts(params.key, 32) };
-        let iv = unsafe { slice::from_raw_parts(params.iv, 12) };
-        let aad = unsafe { slice::from_raw_parts(params.aad, 64) };
-        let tag_slice = unsafe { slice::from_raw_parts(params.tag, 32) };
-        let tag_bytes_vec = hex::decode(tag_slice).expect("Error decoding tag!");
-        let tag_bytes = GenericArray::clone_from_slice(&tag_bytes_vec[..16]);
-        
-        let p = p.as_ref();
-
-        let map = unsafe {
-            memmap2::Mmap::map(&fs::File::open(p).with_context(|| format!("Opening {p:?}"))?)?
+            let map = unsafe {
+                memmap2::Mmap::map(&fs::File::open(p).with_context(|| format!("Opening {p:?}"))?)?
+            };
+            map.to_vec()
         };
 
-        let mut model_data = map.to_vec();
-        
-        
-        match decrypt(key, iv, &mut model_data, aad, &tag_bytes) {
-            Ok(_) => {
-                match crate::pb::ModelProto::decode(&*model_data) {
-                    Ok(model_proto) => {
-                        Ok(model_proto)
-                    }
-                    Err(e) => {
-                        bail!("Error decoding model: {}", e);
-                    }
-                }
+        if let Some(params) = params {
+            let params = unsafe { &*params };
+
+            if params.key.is_null() || params.iv.is_null() || params.aad.is_null() || params.tag.is_null() {
+                bail!("Encryption parameters are null!");
             }
-            Err(e) => {
-                bail!("Error decrypting model: {}", e);
-            }
+
+            let key = unsafe { slice::from_raw_parts(params.key, 32) };
+            let iv = unsafe { slice::from_raw_parts(params.iv, 12) };
+            let aad = unsafe { slice::from_raw_parts(params.aad, 64) };
+            let tag_slice = unsafe { slice::from_raw_parts(params.tag, 32) };
+            let tag_bytes_vec = hex::decode(tag_slice).expect("Error decoding tag!");
+            let tag_bytes = GenericArray::clone_from_slice(&tag_bytes_vec[..16]);
+            
+            decrypt(key, iv, &mut model_data, aad, &tag_bytes)
+                .map_err(|e| anyhow!("Error decrypting model: {}", e))?;
         }
+
+        crate::pb::ModelProto::decode(model_data.as_slice())
+            .map_err(|e| anyhow!("Error decoding model: {}", e))    
     }
 
     fn proto_model_for_read(&self, r: &mut dyn std::io::Read) -> TractResult<pb::ModelProto> {
