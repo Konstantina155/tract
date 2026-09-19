@@ -314,7 +314,7 @@ fn open_weights_file(
     let file = match File::open(&full_path) {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            println!("Weights file not found at {:?}", full_path);
+            eprintln!("Weights file not found at {:?}", full_path);
             return Ok(Vec::new());
         }
         Err(e) => return Err(e).context(format!("Opening {:?}", full_path)).map_err(Into::into),
@@ -515,15 +515,16 @@ pub unsafe extern "C" fn tract_free_tokenizer(
             onig_sys::onig_end();
         }
 
-        // #[cfg(not(feature = "use_sys_time"))]
-        // {
-        //     print_memory("After onig_end");
-        // }
-
         Ok(())
     })();
 
     handle_error(result)
+}
+
+#[no_mangle]
+pub extern "C" fn tract_force_build_patterns() {
+    Lazy::force(&ALLOWLIST_PATTERNS);
+    Lazy::force(&INJECTION_PATTERNS);
 }
 
 static ALLOWLIST_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
@@ -596,11 +597,15 @@ static INJECTION_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
     ]
 });
 
-fn scan_against_patterns(text: &str) -> Option<&'static str> {
+fn scan_against_patterns(
+    text: &str
+) -> Option<&'static str> {
     INJECTION_PATTERNS.iter().find(|p| p.is_match(text)).map(|p| p.as_str())
 }
 
-fn is_typoglycemia_variant(word: &str, target: &str) -> bool {
+fn is_typoglycemia_variant(
+    word: &str, target: &str
+) -> bool {
     let w: Vec<char> = word.to_lowercase().chars().collect();
     let t: Vec<char> = target.chars().collect();
 
@@ -625,7 +630,9 @@ static TYPO_TARGETS: &[&str] = &[
     "ignore", "bypass", "override", "reveal",
     "delete", "system", "prompt", "instructions",
 ];
-fn scan_typoglycemia(text: &str) -> Option<(String, &'static str)> {
+fn scan_typoglycemia(
+    text: &str
+) -> Option<(String, &'static str)> {
     static WORD_SPLIT: Lazy<Regex> = Lazy::new(|| Regex::new(r"[A-Za-z]+").unwrap());
 
     for m in WORD_SPLIT.find_iter(text) {
@@ -639,7 +646,9 @@ fn scan_typoglycemia(text: &str) -> Option<(String, &'static str)> {
     None
 }
 
-fn collapse_char_spacing(text: &str) -> String {
+fn collapse_char_spacing(
+    text: &str
+) -> String {
     static SPACED: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"\b(?:[A-Za-z]\s+){2,}[A-Za-z]\b").unwrap());
     SPACED
@@ -651,7 +660,9 @@ fn collapse_char_spacing(text: &str) -> String {
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 static BASE64_CANDIDATE: Lazy<Regex> = Lazy::new(|| Regex::new(r"[A-Za-z0-9+/]{16,}={0,2}").unwrap());
-fn base64_decode(candidate: &str) -> Option<String> {
+fn base64_decode(
+    candidate: &str
+) -> Option<String> {
     STANDARD
         .decode(candidate.as_bytes())
         .ok()
@@ -659,7 +670,9 @@ fn base64_decode(candidate: &str) -> Option<String> {
 }
 
 static HEX_CANDIDATE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)(?:(?:0x|\\x|%)?[0-9a-f]{2}[\s,;:-]*){6,}").unwrap());
-fn hex_decode(candidate: &str) -> Option<String> {
+fn hex_decode(
+    candidate: &str
+) -> Option<String> {
     let without_prefixes = candidate
         .replace("0x", "")
         .replace("0X", "")
@@ -678,7 +691,9 @@ fn hex_decode(candidate: &str) -> Option<String> {
     bytes.and_then(|b| String::from_utf8(b).ok())
 }
 
-fn mask_safe_contexts(text: &str) -> String {
+fn mask_safe_contexts(
+    text: &str
+) -> String {
     let matched_pattern = ALLOWLIST_PATTERNS.iter().find(|p| p.is_match(text));
     if matched_pattern.is_none() {
         return text.to_string();
@@ -730,7 +745,6 @@ fn guardrail_prompt_injection(
     // hex encoding-based evasion
     for m in HEX_CANDIDATE.find_iter(&masked_prompt_str) {
         if let Some(decoded) = hex_decode(m.as_str()) {
-            eprintln!("Hex is: '{}'", decoded);
             if let Some(p) = scan_against_patterns(&decoded) {
                 return Err(anyhow::anyhow!("[Guardrail violation: hex-encoded] Prompt matched blocked pattern in hex payload: {}", p));
             }
@@ -740,63 +754,701 @@ fn guardrail_prompt_injection(
     Ok(())
 }
 
-use redact_ner::{NerRecognizer, NerConfig};
-use redact_core::{AnalyzerEngine, AnonymizerConfig, AnonymizationStrategy};
-fn guardrail_sensitive_info(
-    prompt_str: &str,
-    ner_model_path: *const c_char,
-    ner_tokenizer_path: *const c_char,
-) -> TractResult<String> {
-    // basic pattern detection + NER
-    if ner_model_path.is_null() || ner_tokenizer_path.is_null() {
-        return Err(anyhow::anyhow!("[FFI Error] Received null pointer from C caller in guardrail_sensitive_info"));
+use redact_core::{Recognizer, RecognizerResult, AnalyzerEngine, AnonymizerConfig, AnonymizationStrategy};
+use redact_core::types::entity::EntityType;
+pub type TractLlmRunnableModel = tract_core::model::RunnableModel<tract_core::model::TypedFact, Box<dyn tract_core::ops::TypedOp>, tract_core::model::TypedModel,>;
+pub struct TractNerRecognizer {
+    tokenizer_ptr: *mut c_void,
+    model: TractLlmRunnableModel,
+    num_inputs: usize,
+    min_score: f32,
+    id2label: Vec<String>,
+    entity_types: Vec<EntityType>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TractEntity {
+    pub text: String,
+    pub entity_type: String,
+    pub score: f32,
+    pub start: usize,
+    pub end: usize,
+}
+
+struct ActiveEntity {
+    entity_type: String,
+    start_token: usize,
+    end_token: usize,
+    score: f32,
+}
+
+fn finish_entity(
+    entity: ActiveEntity,
+    tokenizer_output: &tokenizers::Encoding,
+    prompt: &str,
+) -> Option<TractEntity> {
+    let offsets = tokenizer_output.get_offsets();
+
+    let (start, _) = offsets.get(entity.start_token)?;
+    let (_, end) = offsets.get(entity.end_token)?;
+
+    if *end <= *start {
+        return None;
     }
 
-    let ner_model_path_cstr = unsafe { CStr::from_ptr(ner_model_path) };
-    let ner_model_path_str = match ner_model_path_cstr.to_str() {
-        Ok(s) => s,
-        Err(_) => return Err(anyhow::anyhow!("ner model path is not valid UTF-8")),
+    let text = prompt.get(*start..*end)?.to_string();
+
+    Some(TractEntity {
+        text,
+        entity_type: entity.entity_type,
+        score: entity.score,
+        start: *start,
+        end: *end,
+    })
+}
+
+fn softmax_score(
+    row: impl Iterator<Item = f32>
+) -> (usize, f32) {
+    let values: Vec<f32> = row.collect();
+
+    if values.is_empty() {
+        return (0, 0.0);
+    }
+
+    let max_logit = values
+        .iter()
+        .copied()
+        .fold(f32::NEG_INFINITY, f32::max);
+
+    let exp_values: Vec<f32> = values
+        .iter()
+        .map(|x| (*x - max_logit).exp())
+        .collect();
+
+    let sum: f32 = exp_values.iter().sum();
+
+    if sum == 0.0 {
+        return (0, 0.0);
+    }
+
+    let (label_id, exp_value) = exp_values
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+        .unwrap();
+
+    (label_id, *exp_value / sum)
+}
+
+fn parse_id2label(
+    config_buffer: *const u8,
+    config_buffer_size: usize,
+) -> Result<Vec<String>, anyhow::Error> {
+    let config_slice = unsafe { 
+        std::slice::from_raw_parts(config_buffer, config_buffer_size) 
     };
 
-    let ner_tokenizer_path_cstr = unsafe { CStr::from_ptr(ner_tokenizer_path) };
-    let ner_tokenizer_path_str = match ner_tokenizer_path_cstr.to_str() {
-        Ok(s) => s,
-        Err(_) => return Err(anyhow::anyhow!("ner tokenizer path is not valid UTF-8")),
-    };
-    println!("Paths: {:?} {:?}", ner_model_path_str, ner_tokenizer_path_str);
+    let json: serde_json::Value = serde_json::from_slice(config_slice)
+        .map_err(|e| anyhow::anyhow!("Failed to parse config JSON: {}", e))?;
 
-    // 1st option with directory
-    // let ner_recognizer = NerRecognizer::from_file(ner_model_path_str)
-    //     .map_err(|e| anyhow::anyhow!("[Guardrail violation: Model load failed] {}", e))?;
+    let id2label_map = json
+        .get("id2label")
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| {
+            anyhow::anyhow!("Missing or invalid 'id2label' in config.json")
+        })?;
 
-    // 2nd option with hardcoded model and tokenizer
-    let ner_config = NerConfig {
-        model_path: ner_model_path_str.to_string(),
-        tokenizer_path: Some(ner_tokenizer_path_str.to_string()),
-        min_confidence: 0.4,
-        ..Default::default()
-    };
-    let ner_recognizer = NerRecognizer::from_config(ner_config)?;
-    
-    let mut analyzer = AnalyzerEngine::new();
-    analyzer.recognizer_registry_mut().add_recognizer(Arc::new(ner_recognizer));
+    let mut labels: Vec<(usize, String)> = id2label_map
+        .iter()
+        .filter_map(|(id, label)| {
+            Some((
+                id.parse::<usize>().ok()?,
+                label.as_str()?.to_string(),
+            ))
+        })
+        .collect();
 
-    let results = analyzer
-        .analyze(prompt_str, Some("en"))
-        .map_err(|e| anyhow::anyhow!("[Guardrail violation: PII analysis failed] {}", e))?;
+    labels.sort_by_key(|(id, _)| *id);
 
-    println!("--- NER DEBUG ---");
-    println!("Entities found: {}", results.detected_entities.len());
-    for entity in &results.detected_entities {
-        println!(
-            "type={:?} text={:?} score={:?} start={} end={}",
-            entity.entity_type, entity.text, entity.score, entity.start, entity.end
+    let labels: Vec<String> = labels
+        .into_iter()
+        .map(|(_, label)| label)
+        .collect();
+
+    Ok(labels)
+}
+
+impl TractNerRecognizer {
+    unsafe fn new(
+        tokenizer_buffer: *const u8, 
+        tokenizer_buffer_size: usize,
+        config_buffer: *const u8,
+        config_buffer_size: usize,
+        model_path: *const c_char,
+        num_inputs: usize,
+        min_score: f32,
+    ) -> Result<Self, anyhow::Error> {
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("Start loading a NER model");
+        }
+
+        if num_inputs < 1 || num_inputs > 3 {
+            return Err(anyhow::anyhow!("Invalid number of NER model inputs: {}!", num_inputs));
+        }
+
+        if model_path.is_null() {
+            return Err(anyhow::anyhow!("NER model path is null!"));
+        }
+
+        if tokenizer_buffer.is_null() || tokenizer_buffer_size == 0 ||
+            config_buffer.is_null() || config_buffer_size == 0 {
+            return Err(anyhow::anyhow!("NER config or tokenizer is NULL!"));
+        }
+
+        let mut tokenizer_ptr: *mut c_void = std::ptr::null_mut();
+        tract_create_tokenizer(tokenizer_buffer, tokenizer_buffer_size, &mut tokenizer_ptr);
+        if tokenizer_ptr.is_null() {
+            return Err(anyhow::anyhow!("Failed to create NER tokenizer!"));
+        }
+
+        let path = CStr::from_ptr(model_path).to_str()?;
+        let model_dir = PathBuf::from_str(path)?;
+        let model = tract_onnx::onnx().model_for_path(model_dir, None)?
+                        .into_optimized()?
+                        .into_runnable()?;
+
+        let id2label = parse_id2label(config_buffer, config_buffer_size)?;
+        eprintln!("Id2label = {:?}", id2label);
+
+        let entity_types: Vec<EntityType> = id2label
+            .iter()
+            .filter_map(|label| label.split_once('-').map(|(_, ty)| ty))
+            .collect::<std::collections::BTreeSet<_>>() // dedupe B-PER/I-PER -> one "PER"
+            .into_iter()
+            .map(map_tag_to_entity_type)
+            .collect();
+
+        Ok(Self {
+            tokenizer_ptr,
+            model,
+            num_inputs,
+            min_score,
+            id2label,
+            entity_types,
+        })
+    }
+
+    fn run(
+        &self,
+        prompt_str: &str,
+    ) -> Result<Vec<TractEntity>, anyhow::Error> {
+        let tokenizer = unsafe { &*(self.tokenizer_ptr as *mut Tokenizer) };
+        let tokenizer_output_result = tokenizer.encode(prompt_str, true);
+        let tokenizer_output = match tokenizer_output_result {
+            Ok(output) => output,
+            Err(_) => return Err(anyhow::anyhow!("Failed to encode prompt_str")),
+        };
+
+        let input_ids = tokenizer_output.get_ids();
+        let length = input_ids.len();
+
+        let input_ids_tensor: Tensor = tract_ndarray::Array2::from_shape_vec(
+            (1, length),
+            input_ids.iter().map(|&x| x as i64).collect(),
+        )?
+        .into();
+
+        let outputs = match self.num_inputs {
+            1 => {
+                self.model.run(tvec!(input_ids_tensor.into()))?
+            },
+            2 => {
+                let attention_mask = tokenizer_output.get_attention_mask();
+                let attention_mask_tensor: Tensor = tract_ndarray::Array2::from_shape_vec(
+                    (1, length),
+                    attention_mask.iter().map(|&x| x as i64).collect(),
+                )?
+                .into();
+                self.model.run(tvec!(input_ids_tensor.into(), attention_mask_tensor.into()))?
+            },
+            _ => {
+                let attention_mask = tokenizer_output.get_attention_mask();
+                let attention_mask_tensor: Tensor = tract_ndarray::Array2::from_shape_vec(
+                    (1, length),
+                    attention_mask.iter().map(|&x| x as i64).collect(),
+                )?
+                .into();
+
+                let token_type_ids = tokenizer_output.get_type_ids();
+                let token_type_ids_tensor: Tensor = tract_ndarray::Array2::from_shape_vec(
+                    (1, length),
+                    token_type_ids.iter().map(|&x| x as i64).collect(),
+                )?
+                .into();
+                self.model.run(tvec!(input_ids_tensor.into(), attention_mask_tensor.into(), token_type_ids_tensor.into()))?
+            }
+        };
+        let num_labels = self.id2label.len();
+        let logits_tensor = outputs
+            .iter()
+            .find(|output| {
+                let shape = output.shape();
+                shape.len() == 3
+                    && shape[0] == 1
+                    && shape[1] == length
+                    && shape[2] == num_labels
+            })
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Model does not expose NER logits. Expected output [1, {}, {}], got: {:?}",
+                    length,
+                    num_labels,
+                    outputs.iter().map(|o| o.shape()).collect::<Vec<_>>()
+                )
+            })?;
+        let logits = logits_tensor.to_array_view::<f32>()?;
+
+        // BIO-merge into entity spans, skipping [CLS]/[SEP]
+        let cls_id = tokenizer.token_to_id("[CLS]");
+        let sep_id = tokenizer.token_to_id("[SEP]");
+
+        let mut active: Option<ActiveEntity> = None;
+        let mut entities: Vec<TractEntity> = Vec::new();
+
+        for i in 0..length {
+            let token_id = input_ids[i];
+
+            if Some(token_id) == cls_id || Some(token_id) == sep_id {
+                continue;
+            }
+
+            let row = logits.slice(s![0, i, ..]);
+            let (label_id, score) = softmax_score(row.iter().copied());
+
+            let tag = self.id2label
+                .get(label_id)
+                .map(String::as_str)
+                .unwrap_or("O");
+
+            if score < self.min_score {
+                if let Some(entity) = active.take() {
+                    if let Some(result) =
+                        finish_entity(entity, &tokenizer_output, prompt_str,)
+                        {
+                            entities.push(result);
+                        }
+                }
+
+                continue;
+            }
+
+            // O closes the current entity.
+            if tag == "O" {
+                if let Some(entity) = active.take() {
+                    if let Some(result) =
+                        finish_entity(entity, &tokenizer_output, prompt_str,)
+                        {
+                            entities.push(result);
+                        }
+                }
+
+                continue;
+            }
+
+            let (bio, entity_type) = tag.split_once('-').unwrap_or(("B", tag));
+            match bio {
+                "B" => {
+                    if let Some(entity) = active.take() {
+                        if let Some(result) =
+                            finish_entity(entity, &tokenizer_output, prompt_str)
+                        {
+                            entities.push(result);
+                        }
+                    }
+
+                    active = Some(ActiveEntity {
+                        entity_type: entity_type.to_string(),
+                        start_token: i,
+                        end_token: i,
+                        score,
+                    });
+                }
+
+                "I" => {
+                    match active.as_mut() {
+                        Some(entity)
+                            if entity.entity_type == entity_type =>
+                            {
+                                entity.end_token = i;
+                                entity.score = entity.score.min(score);
+                            }
+
+                        _ => {
+                            if let Some(entity) = active.take() {
+                                if let Some(result) =
+                                finish_entity(entity, &tokenizer_output, prompt_str, )
+                                {
+                                    entities.push(result);
+                                }
+                            }
+
+                            active = Some(ActiveEntity {
+                                entity_type: entity_type.to_string(),
+                                start_token: i,
+                                end_token: i,
+                                score,
+                            });
+                        }
+                    }
+                }
+
+                _ => {}
+            }
+        }
+
+        if let Some(entity) = active.take() {
+            if let Some(result) =
+                finish_entity(entity, &tokenizer_output, prompt_str,)
+                {
+                    entities.push(result);
+                }
+        }
+
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("Before drop");
+        }
+        drop(tokenizer_output);
+        drop(outputs);
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("After drop");
+        }
+
+        Ok(entities)
+    }
+}
+
+unsafe impl Send for TractNerRecognizer {}
+unsafe impl Sync for TractNerRecognizer {}
+
+impl std::fmt::Debug for TractNerRecognizer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TractNerRecognizer")
+            .field("num_inputs", &self.num_inputs)
+            .field("min_score", &self.min_score)
+            .finish()
+    }
+}
+
+fn map_tag_to_entity_type(tag: &str) -> EntityType {
+    match tag.to_uppercase().as_str() {
+        "PER" | "PERSON" => EntityType::Person,
+        "ORG" | "ORGANIZATION" | "CORPORATION" | "GROUP" => EntityType::Organization,
+        "LOC" | "LOCATION" | "GPE" | "FAC" | "FACILITY" => EntityType::Location,
+        "DAT" | "DATE" | "TIM" | "TIME" => EntityType::DateTime,
+        "PHONE" | "TELEPHONE" => EntityType::PhoneNumber,
+        "EMAIL" | "EMAIL_ADDRESS" => EntityType::EmailAddress,
+        "MISC" => EntityType::Custom("MISC".to_string()),
+        _ => EntityType::Custom(tag.to_string()),
+    }
+}
+
+impl Recognizer for TractNerRecognizer {
+    fn name(&self) -> &str {
+        "tract_ner"
+    }
+
+    fn supported_entities(&self) -> &[EntityType] {
+        &self.entity_types
+    }
+
+    fn min_score(&self) -> f32 {
+        self.min_score
+    }
+
+    fn analyze(&self, text: &str, _language: &str) -> anyhow::Result<Vec<RecognizerResult>> {
+        let entities = self.run(text).map_err(|e| {
+            eprintln!("[tract_ner] analyze() failed: {}", e);
+            e
+        })?;
+
+        Ok(entities
+            .into_iter()
+            .map(|e| {
+                RecognizerResult::new(
+                    map_tag_to_entity_type(&e.entity_type),
+                    e.start,
+                    e.end,
+                    e.score,
+                    self.name(),
+                )
+                .with_text(text)
+            })
+            .collect())
+    }
+}
+
+//Pattern-based recognizer using regex with 1 entity
+use redact_core::recognizers::validation::validate_entity;
+use std::collections::HashMap;
+#[derive(Debug, Clone)]
+pub struct TractPatternRecognizer {
+    name: String,
+    patterns: HashMap<EntityType, Vec<CompiledPattern>>,
+    min_score: f32,
+}
+
+#[derive(Debug, Clone)]
+struct CompiledPattern {
+    regex: Regex,
+    score: f32,
+    context_words: Vec<String>,
+}
+
+impl TractPatternRecognizer {
+    /// Create a new pattern recognizer with default patterns
+    pub fn new() -> Self {
+        let mut recognizer = Self {
+            name: "TractPatternRecognizer".to_string(),
+            patterns: HashMap::new(),
+            min_score: 0.5,
+        };
+        recognizer.load_default_patterns();
+        recognizer
+    }
+
+    /// Create a new pattern recognizer with custom name
+    pub fn with_name(name: impl Into<String>) -> Self {
+        let mut recognizer = Self::new();
+        recognizer.name = name.into();
+        recognizer
+    }
+
+    /// Set minimum confidence score
+    pub fn with_min_score(mut self, min_score: f32) -> Self {
+        self.min_score = min_score;
+        self
+    }
+
+    /// Add a custom pattern for an entity type
+    pub fn add_pattern(
+        &mut self,
+        entity_type: EntityType,
+        pattern: &str,
+        score: f32,
+    ) -> Result<()> {
+        let regex = Regex::new(pattern)?;
+        let compiled = CompiledPattern {
+            regex,
+            score,
+            context_words: vec![],
+        };
+        self.patterns.entry(entity_type).or_default().push(compiled);
+        Ok(())
+    }
+
+    /// Add a pattern with context words for score boosting
+    pub fn add_pattern_with_context(
+        &mut self,
+        entity_type: EntityType,
+        pattern: &str,
+        score: f32,
+        context_words: Vec<String>,
+    ) -> Result<()> {
+        let regex = Regex::new(pattern)?;
+        let compiled = CompiledPattern {
+            regex,
+            score,
+            context_words,
+        };
+        self.patterns.entry(entity_type).or_default().push(compiled);
+        Ok(())
+    }
+
+    /// Load default patterns for common PII types
+    fn load_default_patterns(&mut self) {
+        // Email addresses
+        let _ = self.add_pattern(
+            EntityType::EmailAddress,
+            r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",
+            0.8,
         );
     }
-    println!("-----------------");
 
-    if results.detected_entities.is_empty() {
-        return Ok(prompt_str.to_string());
+    /// Check context words around a match to boost confidence
+    fn check_context(&self, text: &str, start: usize, end: usize, context_words: &[String]) -> f32 {
+        if context_words.is_empty() {
+            return 0.0;
+        }
+
+        // Get 50 characters before and after the match
+        let context_start = start.saturating_sub(50);
+        let context_end = (end + 50).min(text.len());
+        let context = &text[context_start..context_end].to_lowercase();
+
+        // Count matching context words
+        let matches = context_words
+            .iter()
+            .filter(|word| context.contains(&word.to_lowercase()))
+            .count();
+
+        // Boost score based on context matches (up to +0.3)
+        (matches as f32 / context_words.len() as f32) * 0.3
+    }
+}
+
+impl Default for TractPatternRecognizer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Recognizer for TractPatternRecognizer {
+    fn name(&self) -> &str {
+        &self.name
+    } 
+
+    fn supported_entities(&self) -> &[EntityType] {
+        static SUPPORTED: &[EntityType] = &[EntityType::EmailAddress];
+        SUPPORTED
+    }
+
+    fn analyze(&self, text: &str, _language: &str) -> Result<Vec<RecognizerResult>> {
+        let mut results = Vec::new();
+
+        for (entity_type, patterns) in &self.patterns {
+            for pattern in patterns {
+                for capture in pattern.regex.captures_iter(text) {
+                    // Prefer group 1 only for patterns that capture a value-only
+                    // span (HTTP Basic credentials; padded AWS Bedrock keys).
+                    // PII patterns such as AGE also have a group 1 — using it
+                    // globally would shrink those spans to the digits alone.
+                    if let Some(matched) = match entity_type {
+                        EntityType::HttpBasicAuth | EntityType::AwsAccessKey => {
+                            capture.get(1).or_else(|| capture.get(0))
+                        }
+                        _ => capture.get(0),
+                    } {
+                        let start = matched.start();
+                        let end = matched.end();
+                        let matched_text = matched.as_str();
+
+                        // Base score from pattern
+                        let mut score = pattern.score;
+
+                        // Boost score based on context if context words are provided
+                        if !pattern.context_words.is_empty() {
+                            score += self.check_context(text, start, end, &pattern.context_words);
+                            score = score.min(1.0); // Cap at 1.0
+                        }
+
+                        // Apply validation (checksum, format validation)
+                        // This can reduce or zero out the score for invalid matches
+                        let validation_factor = validate_entity(entity_type, matched_text);
+                        score *= validation_factor;
+
+                        if score >= self.min_score {
+                            results.push(
+                                RecognizerResult::new(
+                                    entity_type.clone(),
+                                    start,
+                                    end,
+                                    score,
+                                    self.name(),
+                                )
+                                .with_text(text),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(results)
+    }
+
+    fn min_score(&self) -> f32 {
+        self.min_score
+    }
+}
+
+#[cfg(not(feature = "use_pii_regex"))]
+static mut TRACT_NER_RECOGNIZER: Option<Arc<TractNerRecognizer>> = None;
+
+#[cfg(not(feature = "use_pii_regex"))]
+#[no_mangle]
+pub unsafe extern "C" fn tract_ner_init(
+    tokenizer_buffer: *const u8,
+    tokenizer_buffer_size: usize,
+    config_buffer: *const u8,
+    config_buffer_size: usize,
+    model_path: *const c_char,
+    num_inputs: usize,
+    min_score: f32,
+) -> TRACT_RESULT {
+    let result = (|| -> Result<(), anyhow::Error> {
+        let recognizer = TractNerRecognizer::new(
+            tokenizer_buffer,
+            tokenizer_buffer_size,
+            config_buffer,
+            config_buffer_size,
+            model_path,
+            num_inputs,
+            min_score,
+        )?;
+
+        let slot = &mut *std::ptr::addr_of_mut!(TRACT_NER_RECOGNIZER);
+        if slot.is_some() {
+            return Err(anyhow::anyhow!("NER recognizer already initialized"));
+        }
+        *slot = Some(Arc::new(recognizer));
+
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+#[cfg(not(feature = "use_pii_regex"))]
+#[no_mangle]
+pub unsafe extern "C" fn tract_ner_shutdown() -> TRACT_RESULT {
+    let result = (|| -> Result<(), anyhow::Error> {
+        let slot = &mut *std::ptr::addr_of_mut!(TRACT_NER_RECOGNIZER);
+        *slot = None;
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+fn guardrail_sensitive_info(
+    prompt_str: &str,
+) -> TractResult<String> {
+    let mut analyzer: AnalyzerEngine;
+
+    #[cfg(feature = "use_pii_regex")]
+    {
+        //analyzer = AnalyzerEngine::new();
+        analyzer = AnalyzerEngine::builder()
+    .build();
+        let pattern_recognizer = TractPatternRecognizer::new();
+        eprintln!("Supported entities: {}", pattern_recognizer.supported_entities().len());
+        analyzer.recognizer_registry_mut().add_recognizer(Arc::new(pattern_recognizer));
+    }
+
+    #[cfg(not(feature = "use_pii_regex"))]
+    {
+        analyzer = AnalyzerEngine::builder()
+    .build();
+        let ner_recognizer: Arc<TractNerRecognizer> = unsafe {
+            let slot = &*std::ptr::addr_of!(TRACT_NER_RECOGNIZER);
+            slot.clone()
+                .ok_or_else(|| anyhow::anyhow!("NER recognizer not initialized"))?
+        };
+        analyzer.recognizer_registry_mut().add_recognizer(ner_recognizer as Arc<dyn Recognizer>);
     }
 
     // Anonymize with replacement strategy
@@ -804,12 +1456,26 @@ fn guardrail_sensitive_info(
         strategy: AnonymizationStrategy::Replace,
         ..Default::default()
     };
-    let anonymized = analyzer
+    let results = analyzer
         .anonymize(prompt_str, Some("en"), &config)
         .map_err(|e| anyhow::anyhow!("[Guardrail violation: PII anonymization failed] {}", e))?;
-    println!("Anonymized: {}", anonymized.text);
+
+    #[cfg(not(feature = "use_sys_time"))]
+    {
+        eprintln!("Entities found: {}", results.entities.len());
+        for entity in &results.entities {
+            eprintln!(
+                "type={:?} text={:?} score={:?} recognizer={} start={} end={}",
+                entity.entity_type, entity.text, entity.score, entity.recognizer_name, entity.start, entity.end
+            );
+        }
+    }
+
+    if results.entities.is_empty() {
+        return Ok(prompt_str.to_string());
+    }
     
-    Ok(anonymized.text)
+    Ok(results.text)
 }
 
 pub struct LlmInputState {
@@ -823,8 +1489,6 @@ static mut STATE: Option<LlmInputState> = None;
 pub unsafe extern "C" fn tract_value_from_bytes_llm(
     tokenizer_ptr: *mut c_void,
     prompt: *const c_char,
-    ner_model_path: *const c_char,
-    ner_tokenizer_path: *const c_char,
     input_values: *mut *mut c_void,
     input_datum_types: *mut *mut c_void,
     num_inputs: usize,
@@ -843,15 +1507,24 @@ pub unsafe extern "C" fn tract_value_from_bytes_llm(
             Err(_) => return Err(anyhow::anyhow!("prompt is not valid UTF-8")),
         };
 
-        guardrail_prompt_injection(prompt_str)?;
-        let safe_prompt = match guardrail_sensitive_info(prompt_str, ner_model_path, ner_tokenizer_path) {
-            Ok(safe_text) => safe_text,
-            Err(e) => {
-                eprintln!("CRITICAL ERROR in NER guardrail: {}", e);
-                return Err(e);
-            }
-        };
-        println!("Safe prompt is: {}", safe_prompt);
+        //guardrail_prompt_injection(prompt_str)?;
+        let safe_prompt;
+
+        #[cfg(not(feature = "use_pii_guardrail"))]
+        {
+            safe_prompt = prompt_str.to_string();
+        }
+
+        #[cfg(feature = "use_pii_guardrail")]
+        {
+            safe_prompt = match guardrail_sensitive_info(prompt_str) {
+                Ok(safe_text) => safe_text,
+                Err(e) => {
+                    eprintln!("CRITICAL ERROR in NER guardrail: {}", e);
+                    return Err(e);
+                }
+            };
+        }
 
         let tokenizer_output_result = tokenizer_test.encode(safe_prompt.as_str(), true);
         let tokenizer_output = match tokenizer_output_result {
@@ -950,6 +1623,21 @@ pub unsafe extern "C" fn tract_free_llm_inputs(
 #[no_mangle]
 pub unsafe extern "C" fn tract_llm_inference_model_release(
     model: *mut *mut TractLlmInferenceModel,
+) -> TRACT_RESULT {
+    let result = (|| -> Result<(), anyhow::Error> {
+        check_not_null!(model, *model);
+        let model_ptr = *model;
+        let _ = Arc::from_raw(model_ptr);
+        *model = std::ptr::null_mut();
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_llm_runnable_model_release(
+    model: *mut *mut TractLlmRunnableModel,
 ) -> TRACT_RESULT {
     let result = (|| -> Result<(), anyhow::Error> {
         check_not_null!(model, *model);
@@ -1246,6 +1934,188 @@ pub unsafe extern "C" fn tract_model_into_runnable_and_run_llm(
         for (i, output) in output_vectors.into_iter().enumerate() {
             let tensor = output.into_tensor();
             *(input_datum_types.add(i)) = Box::into_raw(Box::new(tensor.datum_type())) as *mut c_void;
+            *(outputs.add(i)) = Box::into_raw(Box::new(tensor)) as *mut c_void;
+        }
+
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("Finished running llm");
+        }
+
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_onnx_model_into_optimized_and_runnable_llm(
+    model: *mut *mut TractLlmInferenceModel,
+    runnable_model: *mut *mut TractLlmRunnableModel,
+    num_inputs: usize,
+    input_shapefacts: *mut *mut c_void,
+    input_datum_types: *mut *mut c_void,
+    output_shapefacts: *mut *mut c_void,
+    output_datum_types: *mut *mut c_void,
+) -> TRACT_RESULT {
+    // Define the result to be returned
+    let result = (|| -> Result<(), anyhow::Error> {
+        assert!(!model.is_null());
+        assert!(!runnable_model.is_null());
+
+        let model_ptr = *model;
+        let model_arc = Arc::from_raw(model_ptr);
+        
+        let inference_model = Arc::try_unwrap(model_arc)
+            .map_err(|_| anyhow::anyhow!("InferenceModel still has other references"))?;
+        
+        *model = std::ptr::null_mut();
+
+        let shapefacts: Vec<Option<Vec<ShapeFact>>> = unsafe {
+            std::slice::from_raw_parts(input_shapefacts, num_inputs)
+                .iter()
+                .map(|&ptr| {
+                    if ptr.is_null() {
+                        None
+                    } else {
+                        let shapefact_ref = &*(ptr as *mut Vec<ShapeFact>);
+                        Some(shapefact_ref.clone())
+                    }
+                })
+                .collect()
+        };
+
+        let mut datum_types: Vec<tract_core::prelude::DatumType> = unsafe {
+            std::slice::from_raw_parts(input_datum_types, num_inputs)
+                .iter()
+                .map(|&ptr| {
+                    if ptr.is_null() {
+                        tract_core::prelude::DatumType::I64
+                    } else {
+                        let datum_ref = &*(ptr as *mut tract_core::prelude::DatumType);
+                        datum_ref.clone()
+                    }
+                })
+                .collect()
+        };
+
+        let mut model_builder = inference_model;
+        let original_input_facts: Vec<Option<tract_hir::infer::ShapeFactoid>> = (0..num_inputs)
+            .map(|i| model_builder.input_fact(i).ok().map(|f| f.shape.clone()))
+            .collect();
+
+        //addition
+        let batch_size = 1i64;
+        let mut solver = tract_core::prelude::SymbolValues::default();
+        for sym_name in ["batch_size", "batch"] {
+            let sym = model_builder.symbol_table.sym(sym_name);
+            solver = solver.with(&sym, batch_size);
+        }
+
+        // reset all node facts
+        for node_id in 0..model_builder.nodes().len() {
+            let node = model_builder.node(node_id);
+            for output_ix in 0..node.outputs.len() {
+                model_builder.set_outlet_fact(
+                    tract_core::internal::OutletId::new(node_id, output_ix),
+                    InferenceFact::default(),
+                )?;
+            }
+        }
+
+        for (i, shapefact_opt) in shapefacts.iter().enumerate() {
+            match shapefact_opt {
+                Some(shapefact_vec) => {
+                    if shapefact_vec.is_empty() {
+                        continue;
+                    }
+
+                    let shapefact = &shapefact_vec[0];
+                    let dims: TVec<TDim> = shapefact
+                        .to_tvec()
+                        .iter()
+                        .map(|d| d.eval(&solver))
+                        .collect();
+                    if datum_types[i] == TDim::datum_type() {
+                        datum_types[i] = i64::datum_type();
+                    }
+                    let input_fact = InferenceFact::dt_shape(datum_types[i], dims);
+                    model_builder = model_builder.with_input_fact(i, input_fact)?;
+                },
+                None => {
+                    if let Some(shape) = &original_input_facts[i] {
+                        match shape.concretize() {
+                            Some(concrete_dims) => {
+                                let resolved_shape: TVec<TDim> = concrete_dims
+                                    .iter()
+                                    .map(|d| d.eval(&solver))
+                                    .collect();
+                                model_builder = model_builder.with_input_fact(
+                                    i,
+                                    InferenceFact::dt_shape(datum_types[i], resolved_shape),
+                                )?;
+                            }
+                            None => {
+                                model_builder = model_builder.with_input_fact(
+                                    i,
+                                    InferenceFact::dt_shape(datum_types[i], shape.clone()),
+                                )?;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let optimized = model_builder.into_optimized().map_err(|e| {
+            eprintln!("Failed to convert to optimized model: {}", e);
+            e
+        })?;
+
+        for (ix, outlet) in optimized.outputs.iter().enumerate() {
+            let fact = optimized.outlet_fact(*outlet)?;
+            let shapefacts_vec: Vec<ShapeFact> = vec![fact.shape.clone()];
+            *(output_shapefacts.add(ix)) = Box::into_raw(Box::new(shapefacts_vec)) as *mut c_void;
+            *(output_datum_types.add(ix)) = Box::into_raw(Box::new(fact.datum_type)) as *mut c_void;
+        }
+        
+        let runnable = optimized.into_runnable()?;
+        *runnable_model = Arc::into_raw(Arc::new(runnable)) as *mut _;
+
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_runnable_run_llm(
+    inputs: *mut *mut c_void,
+    num_inputs: usize,
+    runnable_model: *mut TractLlmRunnableModel,
+    outputs: *mut *mut c_void,
+) -> TRACT_RESULT {
+    // Define the result to be returned
+    let result = (|| -> Result<(), anyhow::Error> {
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("Start running llm");
+        }      
+        
+        let model_inputs: SmallVec<[TValue; 4]> = unsafe {
+            std::slice::from_raw_parts(inputs, num_inputs)
+                .iter()
+                .map(|&ptr| {
+                    let tensor_ref = &*(ptr as *mut Tensor);
+                    TValue::from(tensor_ref.clone())
+                })
+                .collect()
+        };
+        
+        let runnable = &*runnable_model;
+        let output_vectors = runnable.run(model_inputs)?;
+        for (i, output) in output_vectors.into_iter().enumerate() {
+            let tensor = output.into_tensor();
             *(outputs.add(i)) = Box::into_raw(Box::new(tensor)) as *mut c_void;
         }
 
@@ -1570,6 +2440,176 @@ pub unsafe extern "C" fn tract_run_latest_models(
         }
         drop(model);
         drop(tokenizer_output);
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("After drop");
+        }
+
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_run_ner(
+    model_path: *const c_char,
+    tokenizer_ptr: *mut c_void,
+    prompt: *const c_char,
+    inference: *mut *mut c_char,
+    inference_model: *mut *mut TractLlmInferenceModel
+) -> TRACT_RESULT {
+    // Define the result to be returned
+    let result = (|| -> Result<(), anyhow::Error> {
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("Start ner");
+        }
+        
+        let tokenizer = &*(tokenizer_ptr as *mut Tokenizer);
+
+        let prompt_cstr = unsafe { CStr::from_ptr(prompt) };
+        let prompt_str = prompt_cstr.to_str()?;
+        let tokenizer_output_result = tokenizer.encode(prompt_str, true);
+        let tokenizer_output = match tokenizer_output_result {
+            Ok(output) => output,
+            Err(_) => return Err(anyhow::anyhow!("Failed to encode prompt_str")),
+        };
+
+        let input_ids = tokenizer_output.get_ids();
+        let attention_mask = tokenizer_output.get_attention_mask();
+        let length = input_ids.len();
+        
+        let model = {
+            #[cfg(feature = "use_sys_time")]
+            {
+                let shape = [1, length];
+                if inference_model.is_null() {
+                    let path = CStr::from_ptr(model_path).to_str()?;
+                    let model_dir = PathBuf::from_str(path)?;
+                    tract_onnx::onnx().model_for_path(model_dir, None)?
+                        .with_input_fact(0, i64::fact(shape).into())?
+                        .with_input_fact(1, i64::fact(shape).into())?
+                        .into_typed()?
+                        .into_runnable()?
+                } else {
+                    Box::from_raw(*inference_model)
+                        .with_input_fact(0, i64::fact(shape).into())?
+                        .with_input_fact(1, i64::fact(shape).into())?
+                        .into_typed()?
+                        .into_runnable()?
+                }
+            }
+
+            #[cfg(not(feature = "use_sys_time"))]
+            {
+                if inference_model.is_null() {
+                    let path = CStr::from_ptr(model_path).to_str()?;
+                    let model_dir = PathBuf::from_str(path)?;
+                    tract_onnx::onnx().model_for_path(model_dir, None)?
+                        .into_optimized()?
+                        .into_runnable()?
+                } else {
+                    Box::from_raw(*inference_model)
+                        .into_optimized()?
+                        .into_runnable()?
+                }
+            }
+        };
+
+        let input_ids_tensor: Tensor = tract_ndarray::Array2::from_shape_vec(
+            (1, length),
+            input_ids.iter().map(|&x| x as i64).collect(),
+        )?
+        .into();
+        let attention_mask_tensor: Tensor = tract_ndarray::Array2::from_shape_vec(
+            (1, length),
+            attention_mask.iter().map(|&x| x as i64).collect(),
+        )?
+        .into();
+
+        let start = std::time::Instant::now();
+        // NOTE: only 2 inputs — this model has no token_type_ids
+        let outputs = model.run(tvec!(input_ids_tensor.into(), attention_mask_tensor.into()))?;
+        let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+        eprintln!("[NER] ONLY model.run = {:.3} ms", elapsed_ms);
+        let logits = outputs[0].to_array_view::<f32>()?; // [1, seq_len, num_labels]
+
+        let id2label = [
+            "O", "B-PER", "I-PER", "B-ORG", "I-ORG",
+            "B-LOC", "I-LOC", "B-MISC", "I-MISC"
+        ];
+
+        let mut tags: Vec<&str> = Vec::with_capacity(length);
+        for pos in 0..length {
+            let row = logits.slice(s![0, pos, ..]);
+            let (label_id, _) = row.iter().enumerate()
+                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+                .ok_or_else(|| anyhow::anyhow!("Empty logits row"))?;
+            tags.push(id2label.get(label_id).copied().unwrap_or("O"));
+        }
+
+        // BIO-merge into entity spans, skipping [CLS]/[SEP]
+        let cls_id = tokenizer.token_to_id("[CLS]");
+        let sep_id = tokenizer.token_to_id("[SEP]");
+
+        let mut entities: Vec<(String, String)> = Vec::new();
+        let mut current_word = String::new();
+        let mut current_label: Option<String> = None;
+
+        for (i, tag) in tags.iter().enumerate() {
+            if Some(input_ids[i]) == cls_id || Some(input_ids[i]) == sep_id {
+                continue;
+            }
+            if *tag == "O" {
+                if let Some(lbl) = current_label.take() {
+                    entities.push((current_word.trim().to_string(), lbl));
+                    current_word.clear();
+                }
+                continue;
+            }
+            let (bio, label) = tag.split_once('-').unwrap_or(("B", tag));
+            let piece = tokenizer.id_to_token(input_ids[i]).unwrap_or_default();
+            let is_continuation = piece.starts_with("##");
+            let clean_piece = piece.trim_start_matches("##");
+
+            if bio == "B" || current_label.as_deref() != Some(label) {
+                if let Some(lbl) = current_label.take() {
+                    entities.push((current_word.trim().to_string(), lbl));
+                }
+                current_word = clean_piece.to_string();
+                current_label = Some(label.to_string());
+            } else if is_continuation {
+                current_word.push_str(clean_piece);
+            } else {
+                current_word.push(' ');
+                current_word.push_str(clean_piece);
+            }
+        }
+        if let Some(lbl) = current_label {
+            entities.push((current_word.trim().to_string(), lbl));
+        }
+
+        // Handle the Option and create a CString
+        let formatted_string = if entities.is_empty() {
+            "Inference: No entities found".to_string()
+        } else {
+            let joined = entities.iter()
+                .map(|(w, l)| format!("{} ({})", w, l))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("Inference: {}", joined)
+        };
+        let c_word = CString::new(formatted_string)?;
+        *inference = c_word.into_raw(); // Pass the result back
+
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("Before drop");
+        }
+        drop(model);
+        drop(tokenizer_output);
+        drop(outputs);
         #[cfg(not(feature = "use_sys_time"))]
         {
             print_memory("After drop");

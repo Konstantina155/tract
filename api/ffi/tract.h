@@ -56,6 +56,8 @@ typedef struct TractInferenceModel TractInferenceModel;
 
 typedef struct TractLlmInferenceModel TractLlmInferenceModel;
 
+typedef struct TractLlmRunnableModel TractLlmRunnableModel;
+
 typedef struct TractLlmTransformedModel TractLlmTransformedModel;
 
 typedef struct TractModel TractModel;
@@ -187,10 +189,20 @@ enum TRACT_RESULT tract_create_tokenizer(const uint8_t *tokenizer_buffer,
 
 enum TRACT_RESULT tract_free_tokenizer(void **tokenizer_ptr);
 
+void tract_force_build_patterns(void);
+
+enum TRACT_RESULT tract_ner_init(const uint8_t *tokenizer_buffer,
+                                 uintptr_t tokenizer_buffer_size,
+                                 const uint8_t *config_buffer,
+                                 uintptr_t config_buffer_size,
+                                 const char *model_path,
+                                 uintptr_t num_inputs,
+                                 float min_score);
+
+enum TRACT_RESULT tract_ner_shutdown(void);
+
 enum TRACT_RESULT tract_value_from_bytes_llm(void *tokenizer_ptr,
                                              const char *prompt,
-                                             const char *ner_model_path,
-                                             const char *ner_tokenizer_path,
                                              void **input_values,
                                              void **input_datum_types,
                                              uintptr_t num_inputs);
@@ -198,6 +210,8 @@ enum TRACT_RESULT tract_value_from_bytes_llm(void *tokenizer_ptr,
 enum TRACT_RESULT tract_free_llm_inputs(void **input_values, uintptr_t num_inputs);
 
 enum TRACT_RESULT tract_llm_inference_model_release(struct TractLlmInferenceModel **model);
+
+enum TRACT_RESULT tract_llm_runnable_model_release(struct TractLlmRunnableModel **model);
 
 enum TRACT_RESULT tract_inference_model_into_typed_llm_test(void **inputs,
                                                             uintptr_t num_inputs,
@@ -217,6 +231,19 @@ enum TRACT_RESULT tract_model_into_runnable_and_run_llm(void **inputs,
                                                         void **input_shapefacts,
                                                         void **input_datum_types);
 
+enum TRACT_RESULT tract_onnx_model_into_optimized_and_runnable_llm(struct TractLlmInferenceModel **model,
+                                                                   struct TractLlmRunnableModel **runnable_model,
+                                                                   uintptr_t num_inputs,
+                                                                   void **input_shapefacts,
+                                                                   void **input_datum_types,
+                                                                   void **output_shapefacts,
+                                                                   void **output_datum_types);
+
+enum TRACT_RESULT tract_runnable_run_llm(void **inputs,
+                                         uintptr_t num_inputs,
+                                         struct TractLlmRunnableModel *runnable_model,
+                                         void **outputs);
+
 enum TRACT_RESULT tract_generate_text_llm(void **inputs,
                                           uintptr_t num_inputs,
                                           void *tokenizer_ptr,
@@ -234,6 +261,12 @@ enum TRACT_RESULT tract_run_latest_models(const char *model_path,
                                           char **inference,
                                           uintptr_t num_tokens,
                                           const char *prompt);
+
+enum TRACT_RESULT tract_run_ner(const char *model_path,
+                                void *tokenizer_ptr,
+                                const char *prompt,
+                                char **inference,
+                                struct TractLlmInferenceModel **inference_model);
 
 enum TRACT_RESULT tract_run_albert(const char *model_path,
                                    void *tokenizer_ptr,

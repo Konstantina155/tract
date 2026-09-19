@@ -1,10 +1,16 @@
 USE_SYS_TIME ?= 0
+USE_PII_REGEX ?= 0
+USE_PII_GUARDRAIL ?= 0
 
 ifeq ($(USE_SYS_TIME), 1)
     CFLAGS += -DUSE_SYS_TIME
     FEATURE_FLAG = --features "use_sys_time"
+else ifeq ($(USE_PII_REGEX), 1)
+    FEATURE_FLAG = --features "use_pii_regex"
+else ifeq ($(USE_PII_GUARDRAIL), 1)
+    FEATURE_FLAG = --features "use_pii_guardrail"
 else
-    FEATURE_FLAG =
+	FEATURE_FLAG =
 endif
 
 all: mobilenet
