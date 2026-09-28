@@ -94,7 +94,9 @@ pub trait InferenceModelInterface: Sized {
     fn input_count(&self) -> Result<usize>;
     fn output_count(&self) -> Result<usize>;
     fn input_name(&self, id: usize) -> Result<String>;
+    fn input_label_name(&self, id: usize) -> Result<String>;
     fn output_name(&self, id: usize) -> Result<String>;
+    fn output_label_name(&self, id: usize) -> Result<String>;
 
     fn input_fact(&self, id: usize) -> Result<Self::InferenceFact>;
 
@@ -130,6 +132,9 @@ pub trait ModelInterface: Sized {
     fn input_name(&self, id: usize) -> Result<String>;
 
     fn output_name(&self, id: usize) -> Result<String>;
+
+    fn input_label_name(&self, id: usize) -> Result<String>;
+    fn output_label_name(&self, id: usize) -> Result<String>;
 
     fn set_output_names(
         &mut self,

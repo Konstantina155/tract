@@ -176,7 +176,7 @@ pub fn for_data(
             use tract_onnx::data_resolver::FopenDataResolver;
             use tract_onnx::tensor::load_tensor;
             let proto = ::tract_onnx::tensor::proto_from_reader(reader)?;
-            let tensor = load_tensor(&FopenDataResolver, &proto, None)?;
+            let tensor = load_tensor(&FopenDataResolver, &proto, None, None)?;
             Ok((Some(proto.name.to_string()).filter(|s| !s.is_empty()), tensor.into()))
         }
         #[cfg(not(feature = "onnx"))]

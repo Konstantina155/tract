@@ -7,5 +7,17 @@ edition = "2021"
 
 [dependencies]
 image.workspace = true
-
+tempfile = "3.10"
+rand = "0.8"
+regex = "1"
+anyhow = "1.0"
+memmap2.workspace = true
+anstyle.workspace = true
+anstyle-parse.workspace = true
+anstyle-query.workspace = true
+ndarray.workspace = true
+tokenizers.workspace = true
+clap_builder = { version = "4.4" }
+clap_lex = { version = "0.6" }
 tract-nnef = { version = "=0.21.4-pre", path = "../../nnef" }
+tract-onnx = { path = "../../onnx", version = "=0.21.4-pre" }

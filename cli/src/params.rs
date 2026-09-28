@@ -297,6 +297,7 @@ impl Parameters {
                     &graph,
                     path.parent().and_then(|it| it.to_str()),
                     symbol_table,
+                    None
                 )?;
 
                 if matches.is_present("determinize") {

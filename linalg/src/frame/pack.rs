@@ -22,6 +22,11 @@ impl Packer {
     }
 
     #[inline]
+    pub fn end_padding_record(&self) -> usize {
+        self.end_padding_record
+    }
+
+    #[inline]
     pub fn panel_width(&self) -> usize {
         self.r
     }
@@ -33,7 +38,7 @@ impl Packer {
 
     #[inline]
     pub fn single_panel_len<D: DimLike>(&self, k: D) -> D {
-        ((k + self.end_padding_record) * self.r).divceil(self.alignment()) * self.alignment()
+        ((k + self.end_padding_record()) * self.r).divceil(self.alignment()) * self.alignment()
     }
 
     #[inline]

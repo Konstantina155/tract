@@ -153,7 +153,10 @@ pub fn read_tensor<R: std::io::Read>(mut reader: R) -> TractResult<Tensor> {
     }
 }
 
-pub fn write_tensor<W: std::io::Write>(w: &mut W, tensor: &Tensor) -> TractResult<()> {
+pub fn write_tensor<W: std::io::Write>(
+    w: &mut W,
+    tensor: &Tensor,
+) -> TractResult<()> {
     unsafe {
         ensure!(tensor.datum_type() != TDim::datum_type());
         let mut header: Header = std::mem::zeroed();
@@ -167,28 +170,73 @@ pub fn write_tensor<W: std::io::Write>(w: &mut W, tensor: &Tensor) -> TractResul
         for d in 0..tensor.rank() {
             header.dims[d] = tensor.shape()[d] as u32;
         }
-        header.data_size_bytes = (tensor.len() * tensor.datum_type().size_of()) as u32;
-        header.bits_per_item = (tensor.datum_type().size_of() * 8) as u32;
 
         let (itv, it) = match tensor.datum_type() {
-            DatumType::F16|DatumType::F32|DatumType::F64 => (0, 0),
-            DatumType::U8|DatumType::U16|DatumType::U32|DatumType::U64|DatumType::QU8(_) => (0, 2),
-            DatumType::I8|DatumType::I16|DatumType::I32|DatumType::I64|DatumType::QI8(_)|DatumType::QI32(_) => (0, 3),
+            DatumType::F16|DatumType::F32|DatumType::F64 => {
+                header.bits_per_item =
+                    (tensor.datum_type().size_of() * 8) as u32;
+                (0, 0)
+            }
+            DatumType::U8|DatumType::U16|DatumType::U32|DatumType::U64|DatumType::QU8(_) => {
+                header.bits_per_item = (tensor.datum_type().size_of() * 8) as u32;
+                (0, 2)
+            }
+            DatumType::I8|DatumType::I16|DatumType::I32|DatumType::I64|DatumType::QI8(_)|DatumType::QI32(_) => {
+                header.bits_per_item = (tensor.datum_type().size_of() * 8) as u32;
+                (0, 3)
+            }
+            DatumType::Bool => {
+                header.bits_per_item = 1;
+                (0, 5)
+            }
             DatumType::String => {
                 header.bits_per_item = 0xFFFF;
                 (TRACT_ITEM_TYPE_VENDOR, 0x1000)
             }
             #[cfg(feature="complex")]
-            DatumType::ComplexF16|DatumType::ComplexF32|DatumType::ComplexF64 => (TRACT_ITEM_TYPE_VENDOR, 0),
+            DatumType::ComplexF16|DatumType::ComplexF32|DatumType::ComplexF64 => {
+                header.bits_per_item = (tensor.datum_type().size_of() * 8) as u32;
+                (TRACT_ITEM_TYPE_VENDOR, 0)
+            }
             #[cfg(feature="complex")]
-            DatumType::ComplexI16|DatumType::ComplexI32|DatumType::ComplexI64 => (TRACT_ITEM_TYPE_VENDOR, 4),
-            DatumType::Bool|DatumType::TDim|DatumType::Blob => bail!("Don't know how to serialize {:?}", tensor.datum_type()),
+            DatumType::ComplexI16|DatumType::ComplexI32|DatumType::ComplexI64 => {
+                header.bits_per_item = (tensor.datum_type().size_of() * 8) as u32;
+                (TRACT_ITEM_TYPE_VENDOR, 4)
+            }
+            DatumType::TDim|DatumType::Blob => bail!("Don't know how to serialize {:?}", tensor.datum_type()),
         };
-        header. item_type = it;
+        header.item_type = it;
         header.item_type_vendor = itv;
+        header.data_size_bytes = if tensor.datum_type() == DatumType::Bool {
+            ((tensor.len() + 7) / 8) as u32
+        } else if tensor.datum_type() == DatumType::String {
+            0
+        } else {
+            (tensor.len() * tensor.datum_type().size_of()) as u32
+        };
+
         let header_buf: &[u8; 128] = std::mem::transmute(&header);
         w.write_all(header_buf)?;
-        if tensor.datum_type().is_copy() {
+        if tensor.datum_type() == DatumType::Bool {
+            let values = tensor.as_slice::<bool>()?;
+            let mut byte = 0u8;
+
+            for (ix, &value) in values.iter().enumerate() {
+                if value {
+                    byte |= 1 << (7 - (ix % 8));
+                }
+
+                if ix % 8 == 7 {
+                    w.write_u8(byte)?;
+                    byte = 0;
+                }
+            }
+
+            // Flush final partial byte.
+            if values.len() % 8 != 0 {
+                w.write_u8(byte)?;
+            }
+        } else if tensor.datum_type().is_copy() {
             w.write_all(tensor.as_bytes())?;
         } else if tensor.datum_type() == DatumType::String {
             for s in tensor.as_slice_unchecked::<String>() {

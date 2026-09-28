@@ -194,7 +194,7 @@ pub fn handle_pbdir(
         let file = fs::File::open(entry.path())?;
         let tensor = tract_onnx::tensor::proto_from_reader(file)?;
         let name = tensor.name.to_string();
-        let value: Tensor = load_tensor(&FopenDataResolver, &tensor, None)?;
+        let value: Tensor = load_tensor(&FopenDataResolver, &tensor, None, None)?;
         values.insert(name, vec!(Ok(value.into_tvalue())));
     }
     dispatch_model_no_pulse!(params.tract_model, |m| compare(

@@ -84,7 +84,7 @@ fn annotate_with_onnx_model(
             let mut v = vec![];
             for a in gnode.attribute.iter() {
                 let value = if let Some(t) = &a.t {
-                    format!("{:?}", load_tensor(&FopenDataResolver, t, None)?)
+                    format!("{:?}", load_tensor(&FopenDataResolver, t, None, None)?)
                 } else {
                     format!("{a:?}")
                 };

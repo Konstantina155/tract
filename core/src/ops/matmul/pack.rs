@@ -78,6 +78,28 @@ impl TypedOp for MatMatMulPack {
 }
 
 impl MatMatMulPack {
+    pub fn new(packer: Packer, k_axis: usize, mn_axis: usize, input_shape: &ShapeFact) -> MatMatMulPack {
+        let dims: TVec<TDim> = input_shape.iter().cloned().collect();
+        let output_shape_fact = Self::output_shape(&dims, &packer, mn_axis, k_axis);
+        MatMatMulPack { packer, k_axis, mn_axis, output_shape_fact }
+    }
+
+    pub fn packer(&self) -> &Packer {
+        &self.packer
+    }
+
+    pub fn k_axis(&self) -> usize {
+        self.k_axis
+    }
+
+    pub fn mn_axis(&self) -> usize {
+        self.mn_axis
+    }
+
+    pub fn output_shape_fact(&self) -> &ShapeFact {
+        &self.output_shape_fact
+    }
+
     fn do_eval(&self, input: &Tensor, output_shape: &[usize]) -> TractResult<TVec<TValue>> {
         let dt = input.datum_type();
         unsafe {

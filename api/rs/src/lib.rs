@@ -116,9 +116,23 @@ impl InferenceModelInterface for InferenceModel {
         Ok(self.0.node(node).name.to_string())
     }
 
+    fn input_label_name(&self, id: usize) -> Result<String> {
+        let outlet = self.0.inputs[id];
+        Ok(self.0.outlet_label(outlet)
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| self.0.node(outlet.node).name.to_string()))
+    }
+
     fn output_name(&self, id: usize) -> Result<String> {
         let node = self.0.outputs[id].node;
         Ok(self.0.node(node).name.to_string())
+    }
+
+    fn output_label_name(&self, id: usize) -> Result<String> {
+        let outlet = self.0.outputs[id];
+        Ok(self.0.outlet_label(outlet)
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| self.0.node(outlet.node).name.to_string()))
     }
 
     fn set_output_names(
@@ -171,6 +185,7 @@ impl InferenceModelInterface for InferenceModel {
 }
 
 // MODEL
+#[derive(Clone)]
 pub struct Model(TypedModel);
 
 impl ModelInterface for Model {
@@ -191,9 +206,23 @@ impl ModelInterface for Model {
         Ok(self.0.node(node).name.to_string())
     }
 
+    fn input_label_name(&self, id: usize) -> Result<String> {
+        let outlet = self.0.inputs[id];
+        Ok(self.0.outlet_label(outlet)
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| self.0.node(outlet.node).name.to_string()))
+    }
+
     fn output_name(&self, id: usize) -> Result<String> {
         let node = self.0.outputs[id].node;
         Ok(self.0.node(node).name.to_string())
+    }
+
+    fn output_label_name(&self, id: usize) -> Result<String> {
+        let outlet = self.0.outputs[id];
+        Ok(self.0.outlet_label(outlet)
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| self.0.node(outlet.node).name.to_string()))
     }
 
     fn set_output_names(

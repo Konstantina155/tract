@@ -116,6 +116,16 @@ impl TypedModel {
         self.optimize()?;
         Ok(self)
     }
+    pub fn into_optimized_without_optimize(mut self) -> TractResult<TypedModel> {
+        println!("Declutter only");
+        self.declutter()?;
+        Ok(self)
+    }
+    pub fn into_optimized_optimize(mut self) -> TractResult<TypedModel> {
+        println!("Into optimized only");
+        self.optimize()?;
+        Ok(self)
+    }
     #[cfg(not(all(debug_assertions, feature = "paranoid_assertions")))]
     #[inline]
     pub fn check_consistency(&self) -> TractResult<()> {
