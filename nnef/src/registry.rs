@@ -150,9 +150,16 @@ impl Registry {
                     return Ok(Some(result));
                 }
             }
-        } else if let Some(op) = node.op().downcast_ref::<ops::binary::TypedBinOp>() {
+        } else if let Some(type_id) = node.op().downcast_ref::<ops::binary::TypedBinOp>()
+            .map(|op| op.0.type_id())
+            .or_else(|| {
+                node.op()
+                    .downcast_ref::<ops::binary::MergeOpUnicast>()
+                    .map(|op| op.0.type_id())
+            })
+        {
             if let Some(op) =
-                self.binary_ops.iter().find(|ew| ew.1.as_ref().type_id() == op.0.type_id())
+                self.binary_ops.iter().find(|ew| ew.1.as_ref().type_id() == type_id)
             {
                 let a = ast.mapping[&node.inputs[0]].clone();
                 let b = ast.mapping[&node.inputs[1]].clone();

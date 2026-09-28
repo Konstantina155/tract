@@ -267,7 +267,12 @@ impl AxisOp {
                 shape.insert(*to, axis);
             }
             Reshape(at, from, to) => {
-                ensure!(from.iter().product::<TDim>() == to.iter().product::<TDim>());
+                ensure!(
+                    from.iter().product::<TDim>() == to.iter().product::<TDim>(),
+                    "Reshape shape mismatch: from={:?} (product={:?}) to={:?} (product={:?})",
+                    from, from.iter().product::<TDim>(), to, to.iter().product::<TDim>()
+                );
+
                 if shape.len() >= from.len() + *at
                     && tract_itertools::izip!(shape.iter().skip(*at), from)
                         .all(|(shape, spec)| shape.to_dim() == *spec)

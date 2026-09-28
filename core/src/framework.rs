@@ -21,7 +21,7 @@ where
     ProtoModel: Debug
 {
     /// Parse a proto model from a reader.
-    fn proto_model_for_read(&self, reader: &mut dyn Read) -> TractResult<ProtoModel>;
+    fn proto_model_for_read(&self, reader: &mut dyn Read, _params: Option<*const EncryptionParameters>) -> TractResult<ProtoModel>;
 
     /// Translate a proto model into a model.
     fn model_for_proto_model(&self, proto: &ProtoModel) -> TractResult<Model> {
@@ -35,12 +35,12 @@ where
     fn proto_model_for_path(&self, p: impl AsRef<Path>, _params: Option<*const EncryptionParameters>, _ner_model_bytes: Option<&[u8]>) -> TractResult<ProtoModel> {
         let mut r = std::fs::File::open(p.as_ref())
             .with_context(|| format!("Could not open {:?}", p.as_ref()))?;
-        self.proto_model_for_read(&mut r)
+        self.proto_model_for_read(&mut r, None)
     }
     
     /// Read a model from a reader
     fn model_for_read(&self, r: &mut dyn Read) -> TractResult<Model> {
-        let proto_model = self.proto_model_for_read(r).context("Reading proto model")?;
+        let proto_model = self.proto_model_for_read(r, None).context("Reading proto model")?;
         self.model_for_proto_model(&proto_model).context("Translating proto model to model")
     }
 

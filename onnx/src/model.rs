@@ -348,7 +348,7 @@ impl Framework<pb::ModelProto, InferenceModel> for Onnx {
     fn proto_model_for_path(&self, p: impl AsRef<path::Path>, _params: Option<*const tract_core::framework::EncryptionParameters>, _ner_model_bytes: Option<&[u8]>) -> TractResult<pb::ModelProto> {
         let p = p.as_ref();
         let mut file = fs::File::open(p).with_context(|| format!("Opening {p:?}"))?;
-        Ok(self.proto_model_for_read(&mut file)?)
+        Ok(self.proto_model_for_read(&mut file, None)?)
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -387,7 +387,7 @@ impl Framework<pb::ModelProto, InferenceModel> for Onnx {
             .map_err(|e| anyhow!("Error decoding model: {}", e))    
     }
 
-    fn proto_model_for_read(&self, r: &mut dyn std::io::Read) -> TractResult<pb::ModelProto> {
+    fn proto_model_for_read(&self, r: &mut dyn std::io::Read, _params: Option<*const tract_core::framework::EncryptionParameters>) -> TractResult<pb::ModelProto> {
         let mut v = vec![];
         r.read_to_end(&mut v)?;
         let b = bytes::Bytes::from(v);
@@ -408,7 +408,7 @@ impl Framework<pb::ModelProto, InferenceModel> for Onnx {
     }
 
     fn model_for_read(&self, r: &mut dyn std::io::Read) -> TractResult<InferenceModel> {
-        let proto_model = self.proto_model_for_read(r).context("Reading proto model")?;
+        let proto_model = self.proto_model_for_read(r, None).context("Reading proto model")?;
         self.model_for_proto_model(&proto_model).context("Translating proto model to model")
     }
 }

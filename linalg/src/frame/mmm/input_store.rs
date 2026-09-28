@@ -4,6 +4,10 @@ use tract_data::internal::*;
 
 pub trait InputStoreSpec: dyn_clone::DynClone + Debug + Send + Sync {
     fn wrap(&self, view: &TensorView) -> Box<dyn InputStore>;
+    
+    fn as_prepacked(&self) -> Option<&PrepackedSpec> {
+        None
+    }
 }
 dyn_clone::clone_trait_object!(InputStoreSpec);
 
@@ -22,6 +26,10 @@ impl InputStoreSpec for PrepackedSpec {
     fn wrap(&self, view: &TensorView) -> Box<dyn InputStore> {
         let ptr = unsafe { view.as_ptr_unchecked() };
         Box::new(Prepacked { ptr, panel_bytes: self.panel_bytes as isize })
+    }
+
+    fn as_prepacked(&self) -> Option<&PrepackedSpec> {
+        Some(self)
     }
 }
 

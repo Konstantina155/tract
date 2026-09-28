@@ -22,6 +22,11 @@ impl Packer {
     }
 
     #[inline]
+    pub fn end_padding_record(&self) -> usize {
+        self.end_padding_record
+    }
+
+    #[inline]
     pub fn panel_width(&self) -> usize {
         self.r
     }

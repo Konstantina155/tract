@@ -102,6 +102,7 @@ macro_rules! release {
 
 // NNEF
 pub struct TractNnef(tract_rs::Nnef);
+use tract_nnef::prelude::*;
 
 /// Creates an instance of an NNEF framework and parser that can be used to load and dump NNEF models.
 ///
@@ -403,6 +404,26 @@ pub unsafe extern "C" fn tract_onnx_model_for_path_llm(
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn tract_nnef_model_for_path_llm(
+    model_path: *const c_char,
+    params: *const tract_core::framework::EncryptionParameters,
+    inference_model: *mut *mut TractModel,
+) -> TRACT_RESULT  {
+    // Define the result to be returned
+    let result = (|| -> Result<(), anyhow::Error> {
+        let path = CStr::from_ptr(model_path).to_str()?;
+        let model_dir: PathBuf = PathBuf::from(path);
+
+        let model = tract_nnef::nnef().with_tract_core().with_onnx().model_for_path(model_dir, Some(params), None, None)?;
+        *inference_model = Arc::into_raw(Arc::new(model)) as *mut _;
+
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn tract_free_input_names(
     input_names: *mut *mut c_char,
     num_inputs: usize,
@@ -481,7 +502,7 @@ pub unsafe extern "C" fn tract_llm_inference_model_output_name(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn tract_llm_value_destroy(
+pub unsafe extern "C" fn tract_onnx_llm_value_destroy(
     value: *mut *mut c_void
 ) -> TRACT_RESULT {
     // Define the result to be returned
@@ -493,6 +514,25 @@ pub unsafe extern "C" fn tract_llm_value_destroy(
         drop(Box::from_raw(*value as *mut Tensor));
         *value = std::ptr::null_mut();
         
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_nnef_llm_value_destroy(
+    value: *mut *mut c_void
+) -> TRACT_RESULT {
+    // Define the result to be returned
+    let result = (|| -> Result<(), anyhow::Error> {
+        if value.is_null() || unsafe { (*value).is_null() } {
+            return Err(anyhow::anyhow!("Llm value is null"));
+        }
+
+        drop(Box::from_raw(*value as *mut TractValue));
+        *value = std::ptr::null_mut();
+
         Ok(())
     })();
 
@@ -787,7 +827,9 @@ fn guardrail_prompt_injection(
     Ok(())
 }*/
 
-use redact_core::{Recognizer, RecognizerResult, AnalyzerEngine, AnonymizerConfig, AnonymizationStrategy, EntityType};
+use redact_core::{Recognizer, RecognizerResult, AnalyzerEngine, AnonymizerConfig, AnonymizationStrategy};
+use redact_core::types::entity::EntityType;
+use regex::Regex;
 pub type TractLlmRunnableModel = tract_core::model::RunnableModel<tract_core::model::TypedFact, Box<dyn tract_core::ops::TypedOp>, tract_core::model::TypedModel,>;
 pub struct TractNerRecognizer {
     tokenizer_ptr: *mut c_void,
@@ -977,13 +1019,11 @@ impl TractNerRecognizer {
         prompt_str: &str,
     ) -> Result<Vec<TractEntity>, anyhow::Error> {
         let tokenizer = unsafe { &*(self.tokenizer_ptr as *mut Tokenizer) };
-        let mut start = std::time::Instant::now();
         let tokenizer_output_result = tokenizer.encode(prompt_str, true);
         let tokenizer_output = match tokenizer_output_result {
             Ok(output) => output,
             Err(_) => return Err(anyhow::anyhow!("Failed to encode prompt_str")),
         };
-        eprintln!("[NER] tokenizer.encode = {:.3} ms", start.elapsed().as_secs_f64() * 1000.0);
 
         let input_ids = tokenizer_output.get_ids();
         let length = input_ids.len();
@@ -994,7 +1034,6 @@ impl TractNerRecognizer {
         )?
         .into();
 
-        start = std::time::Instant::now();
         let outputs = match self.num_inputs {
             1 => {
                 self.model.run(tvec!(input_ids_tensor.into()))?
@@ -1026,8 +1065,6 @@ impl TractNerRecognizer {
             }
         };
 
-        eprintln!("[NER] model.run = {:.3} ms", start.elapsed().as_secs_f64() * 1000.0);
-        
         let num_labels = self.id2label.len();
         let logits_tensor = outputs
             .iter()
@@ -1229,6 +1266,190 @@ impl Recognizer for TractNerRecognizer {
     }
 }
 
+//Pattern-based recognizer using regex with 1 entity
+use redact_core::recognizers::validation::validate_entity;
+use std::collections::HashMap;
+#[derive(Debug, Clone)]
+pub struct TractPatternRecognizer {
+    name: String,
+    patterns: HashMap<EntityType, Vec<CompiledPattern>>,
+    min_score: f32,
+}
+
+#[derive(Debug, Clone)]
+struct CompiledPattern {
+    regex: Regex,
+    score: f32,
+    context_words: Vec<String>,
+}
+
+impl TractPatternRecognizer {
+    /// Create a new pattern recognizer with default patterns
+    pub fn new() -> Self {
+        let mut recognizer = Self {
+            name: "TractPatternRecognizer".to_string(),
+            patterns: HashMap::new(),
+            min_score: 0.5,
+        };
+        recognizer.load_default_patterns();
+        recognizer
+    }
+
+    /// Create a new pattern recognizer with custom name
+    pub fn with_name(name: impl Into<String>) -> Self {
+        let mut recognizer = Self::new();
+        recognizer.name = name.into();
+        recognizer
+    }
+
+    /// Set minimum confidence score
+    pub fn with_min_score(mut self, min_score: f32) -> Self {
+        self.min_score = min_score;
+        self
+    }
+
+    /// Add a custom pattern for an entity type
+    pub fn add_pattern(
+        &mut self,
+        entity_type: EntityType,
+        pattern: &str,
+        score: f32,
+    ) -> Result<()> {
+        let regex = Regex::new(pattern)?;
+        let compiled = CompiledPattern {
+            regex,
+            score,
+            context_words: vec![],
+        };
+        self.patterns.entry(entity_type).or_default().push(compiled);
+        Ok(())
+    }
+
+    /// Add a pattern with context words for score boosting
+    pub fn add_pattern_with_context(
+        &mut self,
+        entity_type: EntityType,
+        pattern: &str,
+        score: f32,
+        context_words: Vec<String>,
+    ) -> Result<()> {
+        let regex = Regex::new(pattern)?;
+        let compiled = CompiledPattern {
+            regex,
+            score,
+            context_words,
+        };
+        self.patterns.entry(entity_type).or_default().push(compiled);
+        Ok(())
+    }
+
+    /// Load default patterns for common PII types
+    fn load_default_patterns(&mut self) {
+        // Email addresses
+        let _ = self.add_pattern(
+            EntityType::EmailAddress,
+            r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",
+            0.8,
+        );
+    }
+
+    /// Check context words around a match to boost confidence
+    fn check_context(&self, text: &str, start: usize, end: usize, context_words: &[String]) -> f32 {
+        if context_words.is_empty() {
+            return 0.0;
+        }
+
+        // Get 50 characters before and after the match
+        let context_start = start.saturating_sub(50);
+        let context_end = (end + 50).min(text.len());
+        let context = &text[context_start..context_end].to_lowercase();
+
+        // Count matching context words
+        let matches = context_words
+            .iter()
+            .filter(|word| context.contains(&word.to_lowercase()))
+            .count();
+
+        // Boost score based on context matches (up to +0.3)
+        (matches as f32 / context_words.len() as f32) * 0.3
+    }
+}
+
+impl Default for TractPatternRecognizer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Recognizer for TractPatternRecognizer {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn supported_entities(&self) -> &[EntityType] {
+        static SUPPORTED: &[EntityType] = &[EntityType::EmailAddress];
+        SUPPORTED
+    }
+
+    fn analyze(&self, text: &str, _language: &str) -> Result<Vec<RecognizerResult>> {
+        let mut results = Vec::new();
+
+        for (entity_type, patterns) in &self.patterns {
+            for pattern in patterns {
+                for capture in pattern.regex.captures_iter(text) {
+                    // Prefer group 1 only for patterns that capture a value-only
+                    // span (HTTP Basic credentials; padded AWS Bedrock keys).
+                    // PII patterns such as AGE also have a group 1 — using it
+                    // globally would shrink those spans to the digits alone.
+                    if let Some(matched) = match entity_type {
+                        EntityType::HttpBasicAuth | EntityType::AwsAccessKey => {
+                            capture.get(1).or_else(|| capture.get(0))
+                        }
+                        _ => capture.get(0),
+                    } {
+                        let start = matched.start();
+                        let end = matched.end();
+                        let matched_text = matched.as_str();
+
+                        // Base score from pattern
+                        let mut score = pattern.score;
+
+                        // Boost score based on context if context words are provided
+                        if !pattern.context_words.is_empty() {
+                            score += self.check_context(text, start, end, &pattern.context_words);
+                            score = score.min(1.0); // Cap at 1.0
+                        }
+
+                        // Apply validation (checksum, format validation)
+                        // This can reduce or zero out the score for invalid matches
+                        let validation_factor = validate_entity(entity_type, matched_text);
+                        score *= validation_factor;
+
+                        if score >= self.min_score {
+                            results.push(
+                                RecognizerResult::new(
+                                    entity_type.clone(),
+                                    start,
+                                    end,
+                                    score,
+                                    self.name(),
+                                )
+                                .with_text(text),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(results)
+    }
+
+    fn min_score(&self) -> f32 {
+        self.min_score
+    }
+}
+
 #[cfg(not(feature = "use_pii_regex"))]
 static mut TRACT_NER_RECOGNIZER: Option<Arc<TractNerRecognizer>> = None;
 
@@ -1288,6 +1509,10 @@ fn guardrail_sensitive_info(
     #[cfg(feature = "use_pii_regex")]
     {
         analyzer = AnalyzerEngine::new();
+        //analyzer = AnalyzerEngine::builder().build();
+        //let pattern_recognizer = TractPatternRecognizer::new();
+        //eprintln!("Supported entities: {}", pattern_recognizer.supported_entities().len());
+        //analyzer.recognizer_registry_mut().add_recognizer(Arc::new(pattern_recognizer));
     }
 
     #[cfg(not(feature = "use_pii_regex"))]
@@ -1300,6 +1525,11 @@ fn guardrail_sensitive_info(
             .ok_or_else(|| anyhow::anyhow!("NER recognizer not initialized"))?
         };
         analyzer.recognizer_registry_mut().add_recognizer(ner_recognizer as Arc<dyn Recognizer>);
+        let results = analyzer
+                    .analyze(prompt_str, Some("en"))
+                    .map_err(|e| anyhow::anyhow!("[Guardrail violation: PII analysis failed] {}", e))?;
+        #[cfg(not(feature = "use_sys_time"))]
+        eprintln!("Entities found in {:.3} ms: {}", results.metadata.processing_time_ms, results.detected_entities.len());
     }
 
     // Anonymize with replacement strategy
@@ -1311,9 +1541,9 @@ fn guardrail_sensitive_info(
     let start = std::time::Instant::now();
     let results = analyzer
         .anonymize(prompt_str, Some("en"), &config)
-        .map_err(|e| anyhow::anyhow!("[Guardrail violation: PII analysis/anonymization failed] {}", e))?;
-    eprintln!("[GUARDRAIL] analyze and anonymize = {:.3} ms", start.elapsed().as_secs_f64() * 1000.0);
-    
+        .map_err(|e| anyhow::anyhow!("[Guardrail violation: PII anonymization failed] {}", e))?;
+    eprintln!("[GUARDRAIL] anonymize = {:.3} ms", start.elapsed().as_secs_f64() * 1000.0);
+
     #[cfg(not(feature = "use_sys_time"))]
     {
         eprintln!("Entities found: {}", results.entities.len());
@@ -1341,11 +1571,44 @@ pub struct LlmInputState {
 static mut STATE: Option<LlmInputState> = None;
 
 #[no_mangle]
-pub unsafe extern "C" fn tract_value_from_bytes_llm(
+pub unsafe extern "C" fn tract_input_datum_types_init_llm(
+    input_datum_types: *mut *mut c_void,
+    num_inputs: usize,
+) -> TRACT_RESULT {
+    // Define the result to be returned
+    let result = (|| -> Result<(), anyhow::Error> {
+       if num_inputs <= 0 {
+            return Err(anyhow::anyhow!("Num inputs is not a positive integer!"));
+        }
+
+        match num_inputs {
+            1 => {
+                *(input_datum_types.add(0)) = Box::into_raw(Box::new(tract_core::prelude::DatumType::I64)) as *mut c_void;
+            },
+            2 => {
+                *(input_datum_types.add(0)) = Box::into_raw(Box::new(tract_core::prelude::DatumType::I64)) as *mut c_void;
+                *(input_datum_types.add(1)) = Box::into_raw(Box::new(tract_core::prelude::DatumType::I64)) as *mut c_void;
+
+            },
+            _ => {
+                *(input_datum_types.add(0)) = Box::into_raw(Box::new(tract_core::prelude::DatumType::I64)) as *mut c_void;
+                *(input_datum_types.add(1)) = Box::into_raw(Box::new(tract_core::prelude::DatumType::I64)) as *mut c_void;
+                *(input_datum_types.add(2)) = Box::into_raw(Box::new(tract_core::prelude::DatumType::I64)) as *mut c_void;
+
+            },
+        };
+        
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_onnx_value_from_bytes_llm(
     tokenizer_ptr: *mut c_void,
     prompt: *const c_char,
     input_values: *mut *mut c_void,
-    input_datum_types: *mut *mut c_void,
     num_inputs: usize,
 ) -> TRACT_RESULT {
     // Define the result to be returned
@@ -1404,24 +1667,15 @@ pub unsafe extern "C" fn tract_value_from_bytes_llm(
             state.attention_mask.iter().map(|&x| x as i64).collect(),
         )?.into();
         
-        if num_inputs < 1 || num_inputs > 3 {
-            return Err(anyhow::anyhow!("The input is not corrrect for an llm!"));
-        }
-
         match num_inputs {
             1 => {
                 *(input_values.add(0)) = Box::into_raw(Box::new(input_ids_tensor)) as *mut c_void;
-                *(input_datum_types.add(0)) = Box::into_raw(Box::new(tract_core::prelude::DatumType::I64)) as *mut c_void;
             },
             2 => {
                 *(input_values.add(0)) = Box::into_raw(Box::new(input_ids_tensor)) as *mut c_void;
                 *(input_values.add(1)) = Box::into_raw(Box::new(attention_mask_tensor)) as *mut c_void;
-
-                *(input_datum_types.add(0)) = Box::into_raw(Box::new(tract_core::prelude::DatumType::I64)) as *mut c_void;
-                *(input_datum_types.add(1)) = Box::into_raw(Box::new(tract_core::prelude::DatumType::I64)) as *mut c_void;
-        
             },
-            _ => {
+            3 => {
                 state.third_vec = if safe_prompt.contains("[MASK]") == true {
                     tokenizer_output.get_type_ids().to_vec()
                 } else {
@@ -1436,12 +1690,10 @@ pub unsafe extern "C" fn tract_value_from_bytes_llm(
                 *(input_values.add(0)) = Box::into_raw(Box::new(input_ids_tensor)) as *mut c_void;
                 *(input_values.add(1)) = Box::into_raw(Box::new(attention_mask_tensor)) as *mut c_void;
                 *(input_values.add(2)) = Box::into_raw(Box::new(third_tensor)) as *mut c_void;
-
-                *(input_datum_types.add(0)) = Box::into_raw(Box::new(tract_core::prelude::DatumType::I64)) as *mut c_void;
-                *(input_datum_types.add(1)) = Box::into_raw(Box::new(tract_core::prelude::DatumType::I64)) as *mut c_void;
-                *(input_datum_types.add(2)) = Box::into_raw(Box::new(tract_core::prelude::DatumType::I64)) as *mut c_void;
-            
             },
+            _ => {
+                return Err(anyhow::anyhow!("The input is not corrrect for an llm!"));
+            }
         };
 
         drop(tokenizer_output);
@@ -1453,7 +1705,113 @@ pub unsafe extern "C" fn tract_value_from_bytes_llm(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn tract_free_llm_inputs(
+pub unsafe extern "C" fn tract_nnef_value_from_bytes_llm(
+    tokenizer_ptr: *mut c_void,
+    prompt: *const c_char,
+    input_values: *mut *mut c_void,
+    num_inputs: usize,
+) -> TRACT_RESULT {
+    // Define the result to be returned
+    let result = (|| -> Result<(), anyhow::Error> {
+        if prompt.is_null() || tokenizer_ptr.is_null() {
+            return Err(anyhow::anyhow!("[FFI Error] Received null pointer from C caller in tract_nnef_value_from_bytes"));
+        }
+
+        let tokenizer_test = &*(tokenizer_ptr as *mut Tokenizer);
+
+        let prompt_cstr = unsafe { CStr::from_ptr(prompt) };
+        let prompt_str = match prompt_cstr.to_str() {
+            Ok(s) => s,
+            Err(_) => return Err(anyhow::anyhow!("prompt is not valid UTF-8")),
+        };
+
+        //guardrail_prompt_injection(prompt_str)?;
+        let safe_prompt;
+
+        #[cfg(not(feature = "use_pii_guardrail"))]
+        {
+            safe_prompt = prompt_str.to_string();
+        }
+
+        #[cfg(feature = "use_pii_guardrail")]
+        {
+            safe_prompt = match guardrail_sensitive_info(prompt_str) {
+                Ok(safe_text) => safe_text,
+                Err(e) => {
+                    eprintln!("CRITICAL ERROR in NER guardrail: {}", e);
+                    return Err(e);
+                }
+            };
+        }
+
+        let tokenizer_output_result = tokenizer_test.encode(safe_prompt.as_str(), true);
+        let tokenizer_output = match tokenizer_output_result {
+            Ok(output) => output,
+            Err(_) => return Err(anyhow::anyhow!("Failed to encode text")),
+        };
+
+        STATE = Some(LlmInputState {
+            ids: tokenizer_output.get_ids().to_vec(),
+            attention_mask: tokenizer_output.get_attention_mask().to_vec(),
+            third_vec: vec![],
+        });
+        let state = STATE.as_mut().unwrap();
+
+        let ids_i64: Vec<i64> = state.ids.iter().map(|&x| x as i64).collect();
+        let ids_shape = [1usize, ids_i64.len()];
+        let ids_bytes = unsafe {
+            std::slice::from_raw_parts(ids_i64.as_ptr() as *const u8, ids_i64.len() * std::mem::size_of::<i64>())
+        };
+        let input_ids_value = Value::from_bytes(DatumType::TRACT_DATUM_TYPE_I64, &ids_shape, ids_bytes)?;
+
+        let mask_i64: Vec<i64> = state.attention_mask.iter().map(|&x| x as i64).collect();
+        let mask_shape = [1usize, mask_i64.len()];
+        let mask_bytes = unsafe {
+            std::slice::from_raw_parts(mask_i64.as_ptr() as *const u8, mask_i64.len() * std::mem::size_of::<i64>())
+        };
+        let attention_mask_value = Value::from_bytes(DatumType::TRACT_DATUM_TYPE_I64, &mask_shape, mask_bytes)?;
+
+        match num_inputs {
+            1 => {
+                *(input_values.add(0)) = Box::into_raw(Box::new(TractValue(input_ids_value))) as *mut c_void;
+            },
+            2 => {
+                *(input_values.add(0)) = Box::into_raw(Box::new(TractValue(input_ids_value))) as *mut c_void;
+                *(input_values.add(1)) = Box::into_raw(Box::new(attention_mask_value)) as *mut c_void;
+            },
+            3 => {
+                state.third_vec = if safe_prompt.contains("[MASK]") == true {
+                    tokenizer_output.get_type_ids().to_vec()
+                } else {
+                    (0.. state.ids.len() as u32).collect()
+                };
+                
+                let third_i64: Vec<i64> = state.third_vec.iter().map(|&x| x as i64).collect();
+                let third_shape = [1usize, third_i64.len()];
+                let third_bytes = unsafe {
+                    std::slice::from_raw_parts(third_i64.as_ptr() as *const u8, third_i64.len() * std::mem::size_of::<i64>())
+                };
+                let third_value = Value::from_bytes(DatumType::TRACT_DATUM_TYPE_I64, &third_shape, third_bytes)?;
+
+                *(input_values.add(0)) = Box::into_raw(Box::new(TractValue(input_ids_value))) as *mut c_void;
+                *(input_values.add(1)) = Box::into_raw(Box::new(attention_mask_value)) as *mut c_void;
+                *(input_values.add(2)) = Box::into_raw(Box::new(third_value)) as *mut c_void;
+            },
+            _ => {
+                return Err(anyhow::anyhow!("The input is not corrrect for an llm!"));
+            }
+        };
+
+        drop(tokenizer_output);
+
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_onnx_free_llm_inputs(
     input_values: *mut *mut c_void,
     num_inputs: usize,
 ) -> TRACT_RESULT {
@@ -1476,8 +1834,61 @@ pub unsafe extern "C" fn tract_free_llm_inputs(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn tract_llm_inference_model_release(
+pub unsafe extern "C" fn tract_nnef_free_llm_inputs(
+    input_values: *mut *mut c_void,
+    num_inputs: usize,
+) -> TRACT_RESULT {
+    let result = (|| -> Result<(), anyhow::Error> {
+        if input_values.is_null() {
+            return Err(anyhow::anyhow!("Received null pointer to tractvalue pointer."));
+        }
+
+        for i in 0..num_inputs {
+            let ptr = *(input_values.add(i));
+            if !ptr.is_null() {
+                drop(Box::from_raw(ptr as *mut TractValue));
+                *(input_values.add(i)) = std::ptr::null_mut();
+            }
+        }
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_onnx_llm_inference_model_release(
     model: *mut *mut TractLlmInferenceModel,
+) -> TRACT_RESULT {
+    let result = (|| -> Result<(), anyhow::Error> {
+        check_not_null!(model, *model);
+        let model_ptr = *model;
+        let _ = Arc::from_raw(model_ptr);
+        *model = std::ptr::null_mut();
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_nnef_llm_inference_model_release(
+    model: *mut *mut TractModel,
+) -> TRACT_RESULT {
+    let result = (|| -> Result<(), anyhow::Error> {
+        check_not_null!(model, *model);
+        let model_ptr = *model;
+        let _ = Arc::from_raw(model_ptr);
+        *model = std::ptr::null_mut();
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_llm_runnable_model_release(
+    model: *mut *mut TractLlmRunnableModel,
 ) -> TRACT_RESULT {
     let result = (|| -> Result<(), anyhow::Error> {
         check_not_null!(model, *model);
@@ -1502,6 +1913,7 @@ pub unsafe extern "C" fn tract_inference_model_into_optimized_llm(
 ) -> TRACT_RESULT {
     // Define the result to be returned
     let result = (|| -> Result<(), anyhow::Error> {
+        let t_total = std::time::Instant::now();
         let shapefacts: Vec<Option<Vec<ShapeFact>>> = unsafe {
             std::slice::from_raw_parts(input_shapefacts, num_inputs)
                 .iter()
@@ -1535,6 +1947,7 @@ pub unsafe extern "C" fn tract_inference_model_into_optimized_llm(
                 .collect()
         };
 
+        let t_clone = std::time::Instant::now();
         let model_ref: &mut TractLlmInferenceModel = {
             assert!(!model.is_null());
             let ptr = *model;
@@ -1543,6 +1956,12 @@ pub unsafe extern "C" fn tract_inference_model_into_optimized_llm(
         };
 
         let mut model_builder = model_ref.clone();
+        eprintln!(
+            "[TIMING] model_builder: {:.3} ms",
+            t_clone.elapsed().as_secs_f64() * 1000.0
+        );
+       
+        let t_symbols = std::time::Instant::now();
         let state = STATE.as_ref().ok_or_else(|| anyhow::anyhow!("STATE not initialized"))?;
         let seq_len = state.ids.len() as i64;
         let batch = 1i64;
@@ -1552,8 +1971,14 @@ pub unsafe extern "C" fn tract_inference_model_into_optimized_llm(
             let val = if sym_name.contains("batch") { batch } else { seq_len };
             solver = solver.with(&sym, val);
         }
+        eprintln!(
+            "[TIMING] symbols: {:.3} ms",
+            t_symbols.elapsed().as_secs_f64() * 1000.0
+        );
+
 
         // reset all node facts
+        let t_reset = std::time::Instant::now();
         for node_id in 0..model_builder.nodes().len() {
             let node = model_builder.node(node_id);
             for i in 0..node.outputs.len() {
@@ -1563,7 +1988,13 @@ pub unsafe extern "C" fn tract_inference_model_into_optimized_llm(
                 )?;
             }
         }
+        eprintln!(
+            "[TIMING] reset node facts: {:.3} ms",
+            t_reset.elapsed().as_secs_f64() * 1000.0
+        );
 
+
+        let t_input_facts = std::time::Instant::now();
         for (i, shapefact_opt) in shapefacts.iter().enumerate() {
             match shapefact_opt {
                 Some(shapefact_vec) => {
@@ -1597,14 +2028,27 @@ pub unsafe extern "C" fn tract_inference_model_into_optimized_llm(
                 }
             }
         }
+        eprintln!(
+            "[TIMING] reconstruct input facts: {:.3} ms",
+            t_input_facts.elapsed().as_secs_f64() * 1000.0
+        );
 
+        let t0 = std::time::Instant::now();
         let m = model_builder.into_optimized().map_err(|e| {
             eprintln!("Failed to convert to optimized model: {}", e);
             e
         })?;
+        eprintln!(
+            "[TIMING] into_optimized: {:.3} ms",
+            t0.elapsed().as_secs_f64() * 1000.0
+        );
 
         let model_arc = Arc::from_raw(*model);
         *model = Arc::into_raw(model_arc) as *mut _;
+        eprintln!(
+            "[TIMING] TOTAL tract_inference_model_into_optimized_llm: {:.3} ms",
+            t_total.elapsed().as_secs_f64() * 1000.0
+        );
         *transformed_model = Box::into_raw(Box::new(m));
         
         // #[cfg(not(feature = "use_sys_time"))]
@@ -1653,12 +2097,201 @@ pub unsafe extern "C" fn tract_model_into_runnable_and_run_llm(
             *(input_shapefacts.add(ix)) = Box::into_raw(Box::new(shapefacts_vec)) as *mut c_void;
         }
 
+        let t1 = std::time::Instant::now();
         let model = typed.into_runnable()?;
+        eprintln!(
+            "[TIMING] into_runnable: {:.3} ms",
+            t1.elapsed().as_secs_f64() * 1000.0
+        );
         
+        let t2 = std::time::Instant::now();
         let output_vectors = model.run(model_inputs)?;
+        eprintln!(
+            "[TIMING] model.run: {:.3} ms",
+            t2.elapsed().as_secs_f64() * 1000.0
+        );
+
         for (i, output) in output_vectors.into_iter().enumerate() {
             let tensor = output.into_tensor();
             *(input_datum_types.add(i)) = Box::into_raw(Box::new(tensor.datum_type())) as *mut c_void;
+            *(outputs.add(i)) = Box::into_raw(Box::new(tensor)) as *mut c_void;
+        }
+
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("Finished running llm");
+        }
+
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_onnx_model_into_optimized_and_runnable_llm(
+    model: *mut *mut TractLlmInferenceModel,
+    runnable_model: *mut *mut TractLlmRunnableModel,
+    num_inputs: usize,
+    input_shapefacts: *mut *mut c_void,
+    input_datum_types: *mut *mut c_void,
+    output_shapefacts: *mut *mut c_void,
+    output_datum_types: *mut *mut c_void,
+) -> TRACT_RESULT {
+    // Define the result to be returned
+    let result = (|| -> Result<(), anyhow::Error> {
+        assert!(!model.is_null());
+        assert!(!runnable_model.is_null());
+
+        let model_ptr = *model;
+        let model_arc = Arc::from_raw(model_ptr);
+        
+        let inference_model = Arc::try_unwrap(model_arc)
+            .map_err(|_| anyhow::anyhow!("InferenceModel still has other references"))?;
+        
+        *model = std::ptr::null_mut();
+
+        let shapefacts: Vec<Option<Vec<ShapeFact>>> = unsafe {
+            std::slice::from_raw_parts(input_shapefacts, num_inputs)
+                .iter()
+                .map(|&ptr| {
+                    if ptr.is_null() {
+                        None
+                    } else {
+                        let shapefact_ref = &*(ptr as *mut Vec<ShapeFact>);
+                        Some(shapefact_ref.clone())
+                    }
+                })
+                .collect()
+        };
+
+        let mut datum_types: Vec<tract_core::prelude::DatumType> = unsafe {
+            std::slice::from_raw_parts(input_datum_types, num_inputs)
+                .iter()
+                .map(|&ptr| {
+                    if ptr.is_null() {
+                        tract_core::prelude::DatumType::I64
+                    } else {
+                        let datum_ref = &*(ptr as *mut tract_core::prelude::DatumType);
+                        datum_ref.clone()
+                    }
+                })
+                .collect()
+        };
+
+        let mut model_builder = inference_model;
+        let original_input_facts: Vec<Option<tract_hir::infer::ShapeFactoid>> = (0..num_inputs)
+            .map(|i| model_builder.input_fact(i).ok().map(|f| f.shape.clone()))
+            .collect();
+
+        //addition
+        let batch_size = 1i64;
+        let mut solver = tract_core::prelude::SymbolValues::default();
+        for sym_name in ["batch_size", "batch"] {
+            let sym = model_builder.symbol_table.sym(sym_name);
+            solver = solver.with(&sym, batch_size);
+        }
+
+        // reset all node facts
+        for node_id in 0..model_builder.nodes().len() {
+            let node = model_builder.node(node_id);
+            for i in 0..node.outputs.len() {
+                model_builder.set_outlet_fact(
+                    tract_core::internal::OutletId::new(node_id, i),
+                    InferenceFact::default(),
+                )?;
+            }
+        }
+
+        for (i, shapefact_opt) in shapefacts.iter().enumerate() {
+            match shapefact_opt {
+                Some(shapefact_vec) => {
+                    let shapefact = &shapefact_vec[0];
+                    let dims: TVec<TDim> = shapefact
+                        .to_tvec()
+                        .iter()
+                        .map(|d| d.eval(&solver))
+                        .collect();
+                    if datum_types[i] == TDim::datum_type() {
+                        datum_types[i] = i64::datum_type();
+                    }
+                    let input_fact = InferenceFact::dt_shape(datum_types[i], dims);
+                    model_builder = model_builder.with_input_fact(i, input_fact)?;
+                },
+                None => {
+                    if let Some(shape) = &original_input_facts[i] {
+                        match shape.concretize() {
+                            Some(concrete_dims) => {
+                                let resolved_shape: TVec<TDim> = concrete_dims
+                                    .iter()
+                                    .map(|d| d.eval(&solver))
+                                    .collect();
+                                model_builder = model_builder.with_input_fact(
+                                    i,
+                                    InferenceFact::dt_shape(datum_types[i], resolved_shape),
+                                )?;
+                            }
+                            None => {
+                                model_builder = model_builder.with_input_fact(
+                                    i,
+                                    InferenceFact::dt_shape(datum_types[i], shape.clone()),
+                                )?;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let optimized = model_builder.into_optimized().map_err(|e| {
+            eprintln!("Failed to convert to optimized model: {}", e);
+            e
+        })?;
+
+        for (ix, outlet) in optimized.outputs.iter().enumerate() {
+            let fact = optimized.outlet_fact(*outlet)?;
+            let shapefacts_vec: Vec<ShapeFact> = vec![fact.shape.clone()];
+            *(output_shapefacts.add(ix)) = Box::into_raw(Box::new(shapefacts_vec)) as *mut c_void;
+            *(output_datum_types.add(ix)) = Box::into_raw(Box::new(fact.datum_type)) as *mut c_void;
+        }
+        
+        let runnable = optimized.into_runnable()?;
+        *runnable_model = Arc::into_raw(Arc::new(runnable)) as *mut _;
+
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_runnable_run_llm(
+    inputs: *mut *mut c_void,
+    num_inputs: usize,
+    runnable_model: *mut TractLlmRunnableModel,
+    outputs: *mut *mut c_void,
+) -> TRACT_RESULT {
+    // Define the result to be returned
+    let result = (|| -> Result<(), anyhow::Error> {
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("Start running llm");
+        }      
+        
+        let model_inputs: SmallVec<[TValue; 4]> = unsafe {
+            std::slice::from_raw_parts(inputs, num_inputs)
+                .iter()
+                .map(|&ptr| {
+                    let tensor_ref = &*(ptr as *mut Tensor);
+                    TValue::from(tensor_ref.clone())
+                })
+                .collect()
+        };
+        
+        let runnable = &*runnable_model;
+        let output_vectors = runnable.run(model_inputs)?;
+        for (i, output) in output_vectors.into_iter().enumerate() {
+            let tensor = output.into_tensor();
             *(outputs.add(i)) = Box::into_raw(Box::new(tensor)) as *mut c_void;
         }
 
@@ -1992,7 +2625,59 @@ let original_input_facts: Vec<Option<tract_hir::infer::ShapeFactoid>> = (0..num_
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn tract_generate_text_llm(
+pub unsafe extern "C" fn tract_nnef_model_into_runnable_and_run_llm(
+    inputs: *mut *mut c_void,
+    num_inputs: usize,
+    transformed_model: *mut *mut TractModel,
+    outputs: *mut *mut c_void,
+) -> TRACT_RESULT {
+    // Define the result to be returned
+    let result = (|| -> Result<(), anyhow::Error> {
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("Start running llm");
+        }
+
+        let model_inputs: Vec<Value> = unsafe {
+            std::slice::from_raw_parts(inputs, num_inputs)
+                .iter()
+                .map(|&ptr| {
+                    let value_ref = &*(ptr as *mut TractValue);
+                    value_ref.0.clone()
+                })
+                .collect()
+        };
+
+        let model_ptr = *transformed_model;
+        //let model_arc = Arc::from_raw(model_ptr);
+        //let inference_model = Arc::try_unwrap(model_arc)
+        //    .map_err(|_| anyhow::anyhow!("TractModel still has other references"))?;
+        //*transformed_model = std::ptr::null_mut();
+
+        //let runnable = inference_model.clone().0.into_runnable()?; // clone for the runnable, consume the clone
+        let inference_model: &TractModel = &*model_ptr;
+        let runnable = inference_model.0.clone().into_runnable()?;
+        let output_values = runnable.run(model_inputs)?;
+
+        *transformed_model = Arc::into_raw(Arc::new(inference_model)) as *mut _;
+
+        for (i, value) in output_values.into_iter().enumerate() {
+            *(outputs.add(i)) = Box::into_raw(Box::new(TractValue(value))) as *mut c_void;
+        }
+
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("Finished running llm");
+        }
+
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_onnx_generate_text_llm(
     inputs: *mut *mut c_void,
     num_inputs: usize,
     tokenizer_ptr: *mut c_void,
@@ -2110,14 +2795,119 @@ pub unsafe extern "C" fn tract_generate_text_llm(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn tract_update_input_values_llm(
+pub unsafe extern "C" fn tract_nnef_generate_text_llm(
+    inputs: *mut *mut c_void,
+    num_inputs: usize,
+    tokenizer_ptr: *mut c_void,
+    outputs: *mut *mut c_void,
+    num_outputs: usize,
+    inference: *mut *mut c_char,
+    next_token_id: *mut usize,
+) -> TRACT_RESULT {
+    // Define the result to be returned
+    let result = (|| -> Result<(), anyhow::Error> {
+        let model_inputs: Vec<Value> = unsafe {
+            std::slice::from_raw_parts(inputs, num_inputs)
+                .iter()
+                .map(|&ptr| {
+                    let value_ref = &*(ptr as *mut TractValue);
+                    value_ref.0.clone()
+                })
+                .collect()
+        };
+
+        let model_outputs: Vec<Value> = unsafe {
+            std::slice::from_raw_parts(outputs, num_outputs)
+                .iter()
+                .map(|&ptr| {
+                    let value_ref = &*(ptr as *mut TractValue);
+                    value_ref.0.clone()
+                })
+                .collect()
+        };
+
+        let tokenizer = &*(tokenizer_ptr as *mut Tokenizer);
+
+        let first_vec_u32: Vec<u32> = if let Ok(array) = model_inputs[0].view::<i64>() {
+            array.iter().map(|x| *x as u32).collect()
+        } else if let Ok(array) = model_inputs[0].view::<f32>() {
+            array.iter().map(|x| *x as u32).collect()
+        // } else if let Ok(array) = model_inputs[0].view::<TDim>() {
+        //     array.iter().map(|x| x.to_i64().unwrap_or(0) as u32).collect()
+        } else {
+            let (in_dt, _in_shape, _in_bytes) = model_inputs[0].as_bytes()?;
+            return Err(anyhow::anyhow!(
+                "Unsupported tensor type: {:?}",
+                in_dt
+            ));
+        };
+
+        let logits = model_outputs[0].view::<f32>()?;
+        let last_logits;
+        let generated_text = match tokenizer.token_to_id("[MASK]") {
+            Some(mask_id) => {
+                let mask_pos = first_vec_u32
+                    .iter()
+                    .position(|&x| x == mask_id)
+                    .ok_or_else(|| anyhow::anyhow!("Mask token not found"))?;
+                last_logits = logits.slice(s![0, mask_pos, ..]);
+                let word_id = last_logits.iter().zip(0..).max_by(|a, b| a.0.partial_cmp(b.0).unwrap()).unwrap().1;
+                tokenizer.id_to_token(word_id)
+            }
+            None => {
+                last_logits = logits.slice(s![0, -1, ..]);
+
+                // Top-k sampling
+                let k = 10;
+                let mut scored: Vec<(usize, f32)> = last_logits
+                    .iter()
+                    .cloned()
+                    .enumerate()
+                    .collect();
+
+                scored.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+                let top_k = &scored[..k.min(scored.len())];
+                *next_token_id = top_k
+                    .choose(&mut thread_rng())
+                    .map(|(idx, _)| *idx)
+                    .unwrap();
+
+                // Stop if model outputs <|endoftext|> token (50256 in GPT-2)
+                let eos_token_id = tokenizer.get_vocab(true).get("<|endoftext|>").cloned().unwrap_or(50256);
+                if *next_token_id == eos_token_id as usize {
+                    return Err(anyhow::anyhow!("Reached EOS token: {}", eos_token_id));
+                }
+
+                tokenizer.decode(&first_vec_u32, true).ok()
+            }
+        };
+
+        // Handle the Option and create a CString
+        let re = regex::Regex::new(r"\s+")
+            .map_err(|e| anyhow::anyhow!("Failed to compile regex: {}", e))?;
+        let clean_string = match generated_text {
+            Some(generated_text) => re.replace_all(generated_text.trim(), " ").to_string(),
+            None => "No generated_text found".to_string(),
+        };
+        let formatted_string = format!("Inference: {}", clean_string);
+        let c_word = CString::new(formatted_string)?;
+        *inference = c_word.into_raw(); // Pass the result back
+
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_onnx_update_input_values_llm(
     input_values: *mut *mut c_void,
     num_inputs: usize,
     next_token_id: usize,
 ) -> TRACT_RESULT {
     // Define the result to be returned
     let result = (|| -> Result<(), anyhow::Error> {
-        tract_free_llm_inputs(input_values, num_inputs);
+        tract_onnx_free_llm_inputs(input_values, num_inputs);
 
         let state = STATE.as_mut().unwrap();
         state.ids.push(next_token_id as u32);
@@ -2221,6 +3011,74 @@ pub unsafe extern "C" fn tract_update_input_values_llm(
             *(inputs.add(i)) = Box::into_raw(Box::new(tensor)) as *mut c_void;
         }
         */
+
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_nnef_update_input_values_llm(
+    input_values: *mut *mut c_void,
+    num_inputs: usize,
+    next_token_id: usize,
+) -> TRACT_RESULT {
+    // Define the result to be returned
+    let result = (|| -> Result<(), anyhow::Error> {
+        tract_nnef_free_llm_inputs(input_values, num_inputs);
+
+        let state = STATE.as_mut().unwrap();
+        state.ids.push(next_token_id as u32);
+        state.attention_mask.push(1);
+
+        if num_inputs == 3 {
+            if let Some(&last) = state.third_vec.last() {
+                state.third_vec.push(last + 1);
+            } else {
+                state.third_vec.push(0);
+            }
+        }
+
+        let ids_i64: Vec<i64> = state.ids.iter().map(|&x| x as i64).collect();
+        let ids_shape = [1usize, ids_i64.len()];
+        let ids_bytes = unsafe {
+            std::slice::from_raw_parts(ids_i64.as_ptr() as *const u8, ids_i64.len() * std::mem::size_of::<i64>())
+        };
+        let input_ids_value = Value::from_bytes(DatumType::TRACT_DATUM_TYPE_I64, &ids_shape, ids_bytes)?;
+
+        let mask_i64: Vec<i64> = state.attention_mask.iter().map(|&x| x as i64).collect();
+        let mask_shape = [1usize, mask_i64.len()];
+        let mask_bytes = unsafe {
+            std::slice::from_raw_parts(mask_i64.as_ptr() as *const u8, mask_i64.len() * std::mem::size_of::<i64>())
+        };
+        let attention_mask_value = Value::from_bytes(DatumType::TRACT_DATUM_TYPE_I64, &mask_shape, mask_bytes)?;
+
+        match num_inputs {
+            1 => {
+                *(input_values.add(0)) = Box::into_raw(Box::new(TractValue(input_ids_value))) as *mut c_void;
+            },
+            2 => {
+                *(input_values.add(0)) = Box::into_raw(Box::new(TractValue(input_ids_value))) as *mut c_void;
+                *(input_values.add(1)) = Box::into_raw(Box::new(TractValue(attention_mask_value))) as *mut c_void;
+            },
+            3 => {
+                *(input_values.add(0)) = Box::into_raw(Box::new(TractValue(input_ids_value))) as *mut c_void;
+                *(input_values.add(1)) = Box::into_raw(Box::new(TractValue(attention_mask_value))) as *mut c_void;
+
+                let third_i64: Vec<i64> = state.third_vec.iter().map(|&x| x as i64).collect();
+                let third_shape = [1usize, third_i64.len()];
+                let third_bytes = unsafe {
+                    std::slice::from_raw_parts(third_i64.as_ptr() as *const u8, third_i64.len() * std::mem::size_of::<i64>())
+                };
+                let third_value = Value::from_bytes(DatumType::TRACT_DATUM_TYPE_I64, &third_shape, third_bytes)?;
+
+                *(input_values.add(2)) = Box::into_raw(Box::new(TractValue(third_value))) as *mut c_void;
+            },
+            _ => {
+                return Err(anyhow::anyhow!("The input is not corrrect for an llm!"));
+            }
+        };
 
         Ok(())
     })();
@@ -2390,6 +3248,192 @@ pub unsafe extern "C" fn tract_run_latest_models(
         }
         drop(model);
         drop(tokenizer_output);
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("After drop");
+        }
+
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn make_ner_runnable(
+    model_buffer: *const u8,
+    model_buffer_size: usize,
+    runnable_model: *mut *mut TractLlmRunnableModel
+) -> TRACT_RESULT {
+    // Define the result to be returned
+    let result = (|| -> Result<(), anyhow::Error> {
+        let model_bytes = unsafe {
+            std::slice::from_raw_parts(model_buffer, model_buffer_size)
+        };
+
+        let model = tract_onnx::onnx().model_for_path(PathBuf::from(""), None, None, Some(model_bytes))?
+                        .into_optimized()?
+                        .into_runnable()?;
+        let boxed_model = Box::new(model);
+        *runnable_model = Box::into_raw(boxed_model);
+
+        Ok(())
+    })();
+
+    handle_error(result)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_free_ner_runnable(
+    runnable_model: *mut TractLlmRunnableModel,
+) {
+    if !runnable_model.is_null() {
+        drop(Box::from_raw(runnable_model));
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tract_run_ner(
+    model: *mut TractLlmRunnableModel,
+    tokenizer_ptr: *mut c_void,
+    prompt: *const c_char,
+    inference: *mut *mut c_char,
+    num_inputs: usize,
+) -> TRACT_RESULT {
+    // Define the result to be returned
+    let result = (|| -> Result<(), anyhow::Error> {
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("Start ner");
+        }
+
+        let tokenizer = &*(tokenizer_ptr as *mut Tokenizer);
+
+        let prompt_cstr = unsafe { CStr::from_ptr(prompt) };
+        let prompt_str = prompt_cstr.to_str()?;
+        let tokenizer_output_result = tokenizer.encode(prompt_str, true);
+        let tokenizer_output = match tokenizer_output_result {
+            Ok(output) => output,
+            Err(_) => return Err(anyhow::anyhow!("Failed to encode prompt_str")),
+        };
+
+        let input_ids = tokenizer_output.get_ids();
+        let attention_mask = tokenizer_output.get_attention_mask();
+        let length = input_ids.len();
+
+        let input_ids_tensor: Tensor = tract_ndarray::Array2::from_shape_vec(
+            (1, length),
+            input_ids.iter().map(|&x| x as i64).collect(),
+        )?
+        .into();
+        let attention_mask_tensor: Tensor = tract_ndarray::Array2::from_shape_vec(
+            (1, length),
+            attention_mask.iter().map(|&x| x as i64).collect(),
+        )?
+        .into();
+
+        let model = &mut *model;
+
+        let start = std::time::Instant::now();
+        let outputs = if num_inputs == 3 {
+            let token_type_ids = tokenizer_output.get_type_ids();
+
+            let token_type_ids_tensor: Tensor =
+                tract_ndarray::Array2::from_shape_vec(
+                    (1, length),
+                    token_type_ids.iter().map(|&x| x as i64).collect(),
+                )?
+                .into();
+
+            model.run(tvec!(
+                input_ids_tensor.into(),
+                attention_mask_tensor.into(),
+                token_type_ids_tensor.into(),
+            ))?
+        } else {
+            model.run(tvec!(
+                input_ids_tensor.into(),
+                attention_mask_tensor.into(),
+            ))?
+        };
+        let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+        eprintln!("[NER] ONLY model.run = {:.3} ms", elapsed_ms);
+        let logits = outputs[0].to_array_view::<f32>()?; // [1, seq_len, num_labels]
+
+        let id2label = [
+            "O", "B-PER", "I-PER", "B-ORG", "I-ORG",
+            "B-LOC", "I-LOC", "B-MISC", "I-MISC"
+        ];
+
+        let mut tags: Vec<&str> = Vec::with_capacity(length);
+        for pos in 0..length {
+            let row = logits.slice(s![0, pos, ..]);
+            let (label_id, _) = row.iter().enumerate()
+                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+                .ok_or_else(|| anyhow::anyhow!("Empty logits row"))?;
+            tags.push(id2label.get(label_id).copied().unwrap_or("O"));
+        }
+
+        // BIO-merge into entity spans, skipping [CLS]/[SEP]
+        let cls_id = tokenizer.token_to_id("[CLS]");
+        let sep_id = tokenizer.token_to_id("[SEP]");
+
+        let mut entities: Vec<(String, String)> = Vec::new();
+        let mut current_word = String::new();
+        let mut current_label: Option<String> = None;
+
+        for (i, tag) in tags.iter().enumerate() {
+            if Some(input_ids[i]) == cls_id || Some(input_ids[i]) == sep_id {
+                continue;
+            }
+            if *tag == "O" {
+                if let Some(lbl) = current_label.take() {
+                    entities.push((current_word.trim().to_string(), lbl));
+                    current_word.clear();
+                }
+                continue;
+            }
+            let (bio, label) = tag.split_once('-').unwrap_or(("B", tag));
+            let piece = tokenizer.id_to_token(input_ids[i]).unwrap_or_default();
+            let is_continuation = piece.starts_with("##");
+            let clean_piece = piece.trim_start_matches("##");
+
+            if bio == "B" || current_label.as_deref() != Some(label) {
+                if let Some(lbl) = current_label.take() {
+                    entities.push((current_word.trim().to_string(), lbl));
+                }
+                current_word = clean_piece.to_string();
+                current_label = Some(label.to_string());
+            } else if is_continuation {
+                current_word.push_str(clean_piece);
+            } else {
+                current_word.push(' ');
+                current_word.push_str(clean_piece);
+            }
+        }
+        if let Some(lbl) = current_label {
+            entities.push((current_word.trim().to_string(), lbl));
+        }
+
+        // Handle the Option and create a CString
+        let formatted_string = if entities.is_empty() {
+            "Inference: No entities found".to_string()
+        } else {
+            let joined = entities.iter()
+                .map(|(w, l)| format!("{} ({})", w, l))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("Inference: {}", joined)
+        };
+        let c_word = CString::new(formatted_string)?;
+        *inference = c_word.into_raw(); // Pass the result back
+
+        #[cfg(not(feature = "use_sys_time"))]
+        {
+            print_memory("Before drop");
+        }
+        drop(tokenizer_output);
+        drop(outputs);
         #[cfg(not(feature = "use_sys_time"))]
         {
             print_memory("After drop");
@@ -2966,8 +4010,9 @@ pub unsafe extern "C" fn tract_inference_model_destroy(
 ) -> TRACT_RESULT {
     release!(model)
 }
-// TYPED MODEL
 
+// TYPED MODEL
+#[derive(Clone)]
 pub struct TractModel(tract_rs::Model);
 
 /// Query an InferenceModel input counts.
@@ -3048,6 +4093,24 @@ pub unsafe extern "C" fn tract_model_output_name(
         *name = std::ptr::null_mut();
         let m = &(*model).0;
         *name = CString::new(m.output_name(output)?)?.into_raw();
+        Ok(())
+    })
+}
+
+/// Query the label of a model output.
+///
+/// The returned label must be freed by the caller using tract_free_cstring.
+#[no_mangle]
+pub unsafe extern "C" fn tract_model_output_label_name(
+    model: *const TractModel,
+    output: usize,
+    name: *mut *mut c_char,
+) -> TRACT_RESULT {
+    wrap(|| unsafe {
+        check_not_null!(model, name);
+        *name = std::ptr::null_mut();
+        let m = &(*model).0;
+        *name = CString::new(m.output_label_name(output)?)?.into_raw();
         Ok(())
     })
 }

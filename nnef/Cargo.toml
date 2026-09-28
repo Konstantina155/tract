@@ -15,6 +15,8 @@ rust-version = "1.75"
 maintenance = { status = "actively-developed" }
 
 [dependencies]
+aes-gcm = "0.9"
+hex = "0.4"
 byteorder.workspace = true
 log.workspace = true
 nom.workspace = true

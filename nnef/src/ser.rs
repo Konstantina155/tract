@@ -353,7 +353,7 @@ impl<'a> IntoAst<'a> {
     ) -> TractResult<Arc<RValue>> {
         let mut name: Identifier = name.as_ref().into();
         let have_tract_core = self.ensure_registry(&"tract_core".into()).is_ok();
-        if tensor.datum_type() == TDim::datum_type() {
+        if tensor.datum_type() == TDim::datum_type() && !have_tract_core {
             return Ok(Self::dump_rec_tensor(&tensor.to_array_view::<TDim>()?, tdim).into());
         }
         if !force_variable && tensor.len() <= 8 {
@@ -370,6 +370,9 @@ impl<'a> IntoAst<'a> {
                 let array =
                     Self::dump_rec_tensor(&tensor.to_array_view::<f16>()?, |f| numeric(f)).into();
                 return Ok(invocation("tract_core_cast", &[array], &[("to", string("f16"))]));
+            } else if have_tract_core && tensor.datum_type() == TDim::datum_type() {
+                let array = Self::dump_rec_tensor(&tensor.to_array_view::<TDim>()?, tdim).into();
+                return Ok(invocation("tract_core_cast", &[array], &[("to", datum_type(TDim::datum_type()))]));
             } else if have_tract_core && tensor.datum_type().is_integer() {
                 if let Ok(value) = tensor.cast_to::<i64>() {
                     let value =

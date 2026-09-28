@@ -9,6 +9,7 @@ pub mod ml;
 pub mod multinomial;
 pub mod non_max_suppression;
 pub mod random;
+pub mod quant;
 
 pub trait WithOnnx {
     fn with_onnx(self) -> Self;
@@ -32,6 +33,7 @@ fn onnx_opl_registry() -> Registry {
     non_max_suppression::register(&mut registry);
     multinomial::register(&mut registry);
     random::register(&mut registry);
+    quant::register(&mut registry);
     registry.register_element_wise(
         "tract_onnx_isinf",
         TypeId::of::<is_inf::IsInf>(),

@@ -244,17 +244,49 @@ pub struct EncryptionParameters {
     pub aad: *const u8,
     pub tag: *const u8
 }
+
+use aes_gcm::{
+    aead::{NewAead, generic_array::GenericArray, generic_array::typenum::U16},
+    Aes256Gcm,
+    AeadInPlace,
+};
+use std::{
+    error::Error,
+    slice,
+};
+pub fn decrypt(key: &[u8], iv: &[u8], cipher_text: &mut [u8], additional_data: &[u8], tag: &GenericArray<u8, U16>) -> Result<(), Box<dyn Error>> {
+    let key = GenericArray::from_slice(key);
+    let cipher = Aes256Gcm::new(key);
+    let nonce = GenericArray::from_slice(iv);
+    let _result = cipher.decrypt_in_place_detached(nonce, additional_data, cipher_text, tag);
+    Ok(())
+}
+
 impl tract_core::prelude::Framework<ProtoModel, TypedModel> for Nnef {
-    fn model_for_path(&self, p: impl AsRef<Path>, _params: Option<*const tract_core::framework::EncryptionParameters>, _weights_decrypted: Option<&[u8]>, _ner_model_bytes: Option<&[u8]>) -> TractResult<TypedModel> {
-        let proto = self.proto_model_for_path(p, None, None)?;
+    fn model_for_path(&self, p: impl AsRef<Path>, params: Option<*const tract_core::framework::EncryptionParameters>, _weights_decrypted: Option<&[u8]>, _ner_model_bytes: Option<&[u8]>) -> TractResult<TypedModel> {
+        if let Some(p) = params {
+            let p_ref = unsafe { &*p };
+            if p_ref.key.is_null() || p_ref.iv.is_null() || p_ref.aad.is_null() || p_ref.tag.is_null() {
+                bail!("Encryption params is null!");
+            }
+        }
+
+        let proto = self.proto_model_for_path(p, params, None)?;
         self.model_for_proto_model(&proto)
     }
 
-    fn proto_model_for_path(&self, path: impl AsRef<Path>, _params: Option<*const tract_core::framework::EncryptionParameters>, _ner_model_bytes: Option<&[u8]>) -> TractResult<ProtoModel> {
+    fn proto_model_for_path(&self, path: impl AsRef<Path>, params: Option<*const tract_core::framework::EncryptionParameters>, _ner_model_bytes: Option<&[u8]>) -> TractResult<ProtoModel> {
+        if let Some(p) = params {
+            let p_ref = unsafe { &*p };
+            if p_ref.key.is_null() || p_ref.iv.is_null() || p_ref.aad.is_null() || p_ref.tag.is_null() {
+                bail!("Encryption params is null!");
+            }
+        }
+
         let path = path.as_ref();
         if path.is_file() {
             let mut f = std::fs::File::open(path)?;
-            return self.proto_model_for_read(&mut f);
+            return self.proto_model_for_read(&mut f, params);
         }
 
         let mut resources: HashMap<String, Arc<dyn Resource>> = Default::default();
@@ -279,13 +311,36 @@ impl tract_core::prelude::Framework<ProtoModel, TypedModel> for Nnef {
         proto_model_from_resources(resources)
     }
 
-    fn proto_model_for_read(&self, reader: &mut dyn std::io::Read) -> TractResult<ProtoModel> {
+    fn proto_model_for_read(&self, reader: &mut dyn std::io::Read, params: Option<*const tract_core::framework::EncryptionParameters>) -> TractResult<ProtoModel> {
+        let mut model_data = Vec::new();
+        reader.read_to_end(&mut model_data)?;
+
+        if let Some(params) = params {
+            let params = unsafe { &*params };
+
+            if params.key.is_null() || params.iv.is_null() || params.aad.is_null() || params.tag.is_null() {
+                bail!("Encryption parameters are null!");
+            }
+
+            let key = unsafe { slice::from_raw_parts(params.key, 32) };
+            let iv = unsafe { slice::from_raw_parts(params.iv, 12) };
+            let aad = unsafe { slice::from_raw_parts(params.aad, 64) };
+            let tag_slice = unsafe { slice::from_raw_parts(params.tag, 32) };
+            let tag_bytes_vec = hex::decode(tag_slice).expect("Error decoding tag!");
+            let tag_bytes = GenericArray::clone_from_slice(&tag_bytes_vec[..16]);
+
+            decrypt(key, iv, &mut model_data, aad, &tag_bytes)
+                .map_err(|e| anyhow!("Error decrypting model: {}", e))?;
+        }
+
+
         let mut resources: HashMap<String, Arc<dyn Resource>> = Default::default();
 
         let mut buffer = vec![0u8; 2];
-        reader.read_exact(&mut buffer)?;
+        let mut cursor = std::io::Cursor::new(model_data);
+        cursor.read_exact(&mut buffer)?;
         let header = std::io::Cursor::new(buffer.clone());
-        let stream = header.chain(reader);
+        let stream = header.chain(cursor);
         let mut tar = if buffer == [0x1f, 0x8b] {
             #[cfg(feature = "flate2")]
             {

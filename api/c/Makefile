@@ -4,18 +4,27 @@ NUM_TOKENS ?= 10
 USE_PII_REGEX ?= 0
 USE_PII_GUARDRAIL ?= 0
 
+FEATURES =
 ifeq ($(USE_SYS_TIME), 1)
     CFLAGS += -DUSE_SYS_TIME
-    FEATURE_FLAG = --features "use_sys_time"
-else ifeq ($(USE_PII_REGEX), 1)
-    FEATURE_FLAG = --features "use_pii_regex"
-else ifeq ($(USE_PII_GUARDRAIL), 1)
-    FEATURE_FLAG = --features "use_pii_guardrail"
+    FEATURES += "use_sys_time"
 endif
 ifeq ($(USE_MEMORY_ONLY), 1)
-	CFLAGS += -DUSE_MEMORY_ONLY
+        CFLAGS += -DUSE_MEMORY_ONLY
 endif
+
+ifeq ($(USE_PII_GUARDRAIL), 1)
+    FEATURES += use_pii_guardrail
+else ifeq ($(USE_PII_REGEX), 1)
+    $(error USE_PII_REGEX=1 requires USE_PII_GUARDRAIL=1)
+endif
+
+ifeq ($(USE_PII_REGEX), 1)
+    FEATURES += use_pii_regex
+endif
+
 CFLAGS += -DNUM_TOKENS=$(NUM_TOKENS)
+FEATURE_FLAG = --features "$(FEATURES)"
 
 all: mobilenet
 
